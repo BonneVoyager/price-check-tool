@@ -1,0 +1,22 @@
+{
+  "name": "openocean-playground",
+  "module": "src/server.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "quote": "bun src/cli.ts quote",
+    "swap": "bun src/cli.ts swap",
+    "tokens": "bun src/cli.ts tokens",
+    "chains": "bun src/cli.ts chains",
+    "gas": "bun src/cli.ts gas",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
