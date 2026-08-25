@@ -185,14 +185,31 @@ export async function chainIcon(chain: ChainInfo): Promise<string | null> {
  * fetch, so those run in small batches. Firing all 30 at once made the whole
  * response exceed Bun.serve's 10s idleTimeout on a cold cache.
  */
-export async function chainsWithIcons(chains: ChainInfo[]) {
+export async function chainsWithIcons(
+  chains: ChainInfo[],
+  /**
+   * Wall-clock budget. Past this we stop starting new upstream lookups and
+   * return what we have, so the endpoint can't hang near a platform timeout.
+   * Chains that miss out keep letter initials and resolve on a later request
+   * (their token lists are cached by then, so the next call is fast).
+   */
+  budgetMs = 8000,
+) {
   const out: (ChainInfo & { icon: string | null })[] = [];
+  const started = Date.now();
   const BATCH = 8;
 
   for (let i = 0; i < chains.length; i += BATCH) {
     const slice = chains.slice(i, i + BATCH);
+
+    // Built-in marks are free (no fetch), so never skip those on budget.
+    const overBudget = Date.now() - started > budgetMs;
     const done = await Promise.all(
-      slice.map(async (c) => ({ ...c, icon: await chainIcon(c) })),
+      slice.map(async (c) => {
+        if (CHAIN_MARKS[c.code]) return { ...c, icon: CHAIN_MARKS[c.code]! };
+        if (overBudget && !iconCache.has(c.code)) return { ...c, icon: null };
+        return { ...c, icon: await chainIcon(c) };
+      }),
     );
     out.push(...done);
   }

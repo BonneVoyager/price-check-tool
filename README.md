@@ -214,29 +214,54 @@ also lets the UI show you the exact upstream URL for every call.
 
 ## Deploying to Vercel
 
-Vercel has a **Bun framework preset** that runs `Bun.serve()` directly, so this
-deploys essentially as-is — no rewrite to serverless handlers, no `/api`
-directory, no Express shim.
+Vercel runs `Bun.serve()` directly via its Bun framework preset, so this deploys
+essentially as-is — no rewrite to serverless handlers, no `/api` directory, no
+Express shim.
 
-The preset needs three things, all already in place: `bun.lock`, a `server.ts`
-entrypoint in the project root or `src/` (ours is [src/server.ts](src/server.ts)),
-and [vercel.json](vercel.json) pinning the runtime:
+**There is no "Bun" entry in the Framework Preset dropdown, and you don't need
+one.** The preset is detected from files in the repo; the dashboard will show
+**Other**, which is correct. Leave it alone.
+
+Detection requires all four of these (all already true here):
+
+| Requirement | This repo |
+|---|---|
+| `bunVersion` in `vercel.json` | `"1.4.x"` |
+| a text `bun.lock` (not the legacy binary `bun.lockb`) | present |
+| entrypoint at `server.ts` or `src/server.ts` | [src/server.ts](src/server.ts) |
+| `Bun.serve()` called once at module top level | yes |
+
+So [vercel.json](vercel.json) is just:
 
 ```json
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "bunVersion": "1.4.x",
-  "functions": { "src/server.ts": { "maxDuration": 60 } }
+  "bunVersion": "1.4.x"
 }
 ```
 
-Then either push to a Git repo and import it at vercel.com, or deploy from here:
+Deploy by importing the repo at [vercel.com/new](https://vercel.com/new), or:
 
 ```bash
 bunx vercel --prod
 ```
 
-No environment variables are needed — the OpenOcean API takes no key.
+No environment variables — the OpenOcean API takes no key.
+
+### If it deploys as a static site instead of running the server
+
+That means detection failed. Check, in order: `bun.lock` is committed (not
+gitignored, and not `bun.lockb`); `bunVersion` is in `vercel.json`; and
+`src/server.ts` exists at exactly that path. Moving the file to `server.ts` in
+the project root also satisfies the preset.
+
+### Don't add a `functions` block for this
+
+`functions` globs match source files that *become* functions — normally
+`api/**`. Under the framework preset, `src/server.ts` is consumed by the preset
+rather than discovered as a function, so a `functions: { "src/server.ts": … }`
+entry can match nothing and fail the build. Set function memory/duration in the
+project dashboard instead, if you ever need to.
 
 ### Three things that had to change for serverless
 
@@ -245,11 +270,13 @@ No environment variables are needed — the OpenOcean API takes no key.
   doesn't run from the repo root. Now resolved against `import.meta.url`.
 - **HTTP caching.** The token and icon caches are plain in-process `Map`s, which
   live only as long as a warm instance — every cold start would re-fetch
-  upstream. `/api/chains` and `/api/chainIcons` now send `s-maxage=3600`,
+  upstream. `/api/chains` and `/api/chainIcons` send `s-maxage=3600`,
   `/api/tokens` 600s, so Vercel's CDN absorbs the repeats. `/api/quote` and
   `/api/swap` deliberately send **no** cache header: those are live prices.
-- **Duration.** A cold `/api/chainIcons` fans out to ~30 token lists, so the
-  function gets `maxDuration: 60` to match the server's own `idleTimeout: 30`.
+- **A time budget on icon resolution.** A cold `/api/chainIcons` fans out to ~30
+  token lists (~4s). It now stops starting new lookups after 8s and returns what
+  resolved; the rest keep initials and fill in on a later request. That keeps the
+  endpoint inside the default duration limit instead of needing a raised one.
 
 ### Caveats
 
@@ -258,8 +285,6 @@ No environment variables are needed — the OpenOcean API takes no key.
 - **The `Referer` header still matters.** It's set server-side in
   `WAF_HEADERS`, so it works from Vercel exactly as locally. If you ever move
   these calls into the browser, they'll start 403ing.
-- **Cold starts** hit the ~2.8s icon fan-out once per instance. The page paints
-  immediately regardless — icons upgrade from initials when they land.
 
 ---
 
