@@ -8,6 +8,9 @@ bun install
 bun run dev          # → http://localhost:3000
 ```
 
+Static site, no backend: `bun run build` emits `public/app.js` and the page
+talks to OpenOcean directly. See [Deploying to Vercel](#deploying-to-vercel).
+
 The UI follows your OS appearance — dark is the default, light is a full re-map.
 There's no in-app toggle; switch it in System Settings › Appearance (macOS) and
 the page updates on reload. (To force one, override the `:root` tokens in
@@ -201,90 +204,82 @@ src/types.ts      response types
 src/chains.ts     42 chain codes (probe-verified)
 src/chain-marks.ts inline SVG brand marks for look-alike chains
 src/tokens.ts     live token lists, normalisation, icons, symbol resolution
-src/server.ts     Bun.serve proxy + static host
+src/browser.ts    browser entrypoint, bundled to public/app.js
+static.ts         local dev server (static files + dev-only proxy)
 src/cli.ts        terminal client
 public/index.html frontend (single file, no build)
 ```
 
-The frontend calls the API **through the local server**, not directly:
-`open-api.openocean.finance` doesn't reliably send CORS headers, and the proxy
-also lets the UI show you the exact upstream URL for every call.
+The frontend calls OpenOcean **directly from the browser** — CORS is fine and the
+browser's own `Referer` satisfies the WAF. The UI still shows the exact upstream
+URL for every call, rebuilt client-side. Local dev proxies `/quote` and `/swap`
+only, because a `localhost` Referer is rejected; see
+[Deploying to Vercel](#deploying-to-vercel).
 
 ---
 
 ## Deploying to Vercel
 
-Vercel runs `Bun.serve()` directly via its Bun framework preset, so this deploys
-essentially as-is — no rewrite to serverless handlers, no `/api` directory, no
-Express shim.
+**This is a static site — there is no server to run.** The page calls OpenOcean
+directly from the browser, so Vercel just serves files from its CDN.
 
-**There is no "Bun" entry in the Framework Preset dropdown, and you don't need
-one.** The preset is detected from files in the repo; the dashboard will show
-**Other**, which is correct. Leave it alone.
-
-Detection requires all four of these (all already true here):
-
-| Requirement | This repo |
-|---|---|
-| `bunVersion` in `vercel.json` | `"1.4.x"` |
-| a text `bun.lock` (not the legacy binary `bun.lockb`) | present |
-| entrypoint at `server.ts` or `src/server.ts` | [src/server.ts](src/server.ts) |
-| `Bun.serve()` called once at module top level | yes |
-
-So [vercel.json](vercel.json) is just:
+[vercel.json](vercel.json):
 
 ```json
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "bunVersion": "1.4.x"
+  "buildCommand": "bun run build",
+  "outputDirectory": "public"
 }
 ```
 
-Deploy by importing the repo at [vercel.com/new](https://vercel.com/new), or:
+Import the repo at [vercel.com/new](https://vercel.com/new) and click Deploy —
+leave **Application Preset** on `Other` and leave every build field blank
+(`vercel.json` supplies them). Or:
 
 ```bash
 bunx vercel --prod
 ```
 
-No environment variables — the OpenOcean API takes no key.
+`bun run build` bundles `src/browser.ts` into `public/app.js` (~10 KB) with
+`bun build`, so the browser and the CLI share the exact same modules. No
+environment variables — the OpenOcean API takes no key.
 
-### If it deploys as a static site instead of running the server
+### Why there's no proxy any more
 
-That means detection failed. Check, in order: `bun.lock` is committed (not
-gitignored, and not `bun.lockb`); `bunVersion` is in `vercel.json`; and
-`src/server.ts` exists at exactly that path. Moving the file to `server.ts` in
-the project root also satisfies the preset.
+The original server existed on two assumptions, both of which turned out to be
+false when tested against a real deployed origin:
 
-### Don't add a `functions` block for this
+- *"CORS blocks browser calls."* It doesn't. `open-api.openocean.finance`
+  answers cross-origin requests with `200` and JSON.
+- *"The WAF needs a `Referer` we can't set from JS."* We can't set it — it's a
+  forbidden header — but we don't need to. The browser sends its own
+  automatically, and that satisfies the gate.
 
-`functions` globs match source files that *become* functions — normally
-`api/**`. Under the framework preset, `src/server.ts` is consumed by the preset
-rather than discovered as a function, so a `functions: { "src/server.ts": … }`
-entry can match nothing and fail the build. Set function memory/duration in the
-project dashboard instead, if you ever need to.
+Verified from `https://…vercel.app`: `quote`, `swap`, `tokenList` and `gasPrice`
+all return 200 directly from page JS.
 
-### Three things that had to change for serverless
+### The one local-dev wrinkle
 
-- **`Bun.file` path.** The `/` route read `"public/index.html"` relative to the
-  process cwd. That works locally and 404s in production, because the function
-  doesn't run from the repo root. Now resolved against `import.meta.url`.
-- **HTTP caching.** The token and icon caches are plain in-process `Map`s, which
-  live only as long as a warm instance — every cold start would re-fetch
-  upstream. `/api/chains` and `/api/chainIcons` send `s-maxage=3600`,
-  `/api/tokens` 600s, so Vercel's CDN absorbs the repeats. `/api/quote` and
-  `/api/swap` deliberately send **no** cache header: those are live prices.
-- **A time budget on icon resolution.** A cold `/api/chainIcons` fans out to ~30
-  token lists (~4s). It now stops starting new lookups after 8s and returns what
-  resolved; the rest keep initials and fill in on a later request. That keeps the
-  endpoint inside the default duration limit instead of needing a raised one.
+Cloudflare accepts an `https://…vercel.app` Referer but **rejects
+`http://localhost:3000`**. So in local dev the direct call to `/quote` and
+`/swap` returns 403, while `tokenList`/`gasPrice` still work.
 
-### Caveats
+`bun run dev` therefore starts [static.ts](static.ts), which serves `public/`
+*and* proxies just those two endpoints with the Referer set. The page tries
+direct first and only falls back when it sees a 403, so production never uses
+the fallback — and there's nothing to deploy for it.
 
-- **The CLI won't run on Vercel** — `bun run quote` and friends are local-only
-  tools. Only the web app deploys.
-- **The `Referer` header still matters.** It's set server-side in
-  `WAF_HEADERS`, so it works from Vercel exactly as locally. If you ever move
-  these calls into the browser, they'll start 403ing.
+| | Production (Vercel) | Local `bun run dev` |
+|---|---|---|
+| static files | Vercel CDN | `static.ts` |
+| `tokenList`, `gasPrice` | direct from browser | direct from browser |
+| `quote`, `swap` | direct from browser | via dev proxy (403 otherwise) |
+
+### Caveat
+
+The CLI (`bun run quote`, `tokens`, `chains`) is a local tool and doesn't
+deploy. It sets the `Referer` explicitly, which is why it works from a terminal.
 
 ---
 

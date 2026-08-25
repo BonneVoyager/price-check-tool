@@ -4,8 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun --watch src/server.ts",
-    "start": "bun src/server.ts",
+    "dev": "bun run build && bun static.ts",
+    "build": "bun build src/browser.ts --outfile public/app.js --target browser --minify",
     "quote": "bun src/cli.ts quote",
     "swap": "bun src/cli.ts swap",
     "tokens": "bun src/cli.ts tokens",

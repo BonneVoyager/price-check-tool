@@ -505,11 +505,15 @@ summary:hover { color: var(--text); }
   <div id="out"></div>
 </div>
 
-<script>
+<!-- app.js is an ES module bundle (bun build). Import it from a module script
+     so `OO` is available before this code runs; a plain <script src> cannot
+     execute a module, and a separate module script would be deferred. -->
+<script type="module">
+import { OO } from "./app.js";
 const $ = (id) => document.getElementById(id);
 let CHAINS = [];
 let TOKENS = [];
-/** code -> logo URL, filled in async by /api/chainIcons after first paint. */
+/** code -> logo URL, resolved in the browser after first paint. */
 let CHAIN_ICONS = {};
 const SEL = { chain: null, in: null, out: null };
 
@@ -749,10 +753,7 @@ async function loadTokensFor(code) {
   setNote(`Loading tokens for <strong>${esc(code)}</strong>…`);
 
   try {
-    const res = await fetch(`/api/tokens?chain=${encodeURIComponent(code)}`);
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.error || "request failed");
-    TOKENS = body.tokens || [];
+    TOKENS = await OO.loadTokens(code);
 
     const native = TOKENS.find((t) => t.isNative);
     // Prefer USDC/USDT by name rather than taking the top-priced stablecoin —
@@ -790,9 +791,9 @@ async function boot() {
   });
 
   try {
-    CHAINS = await (await fetch("/api/chains")).json();
-  } catch {
-    setNote("Could not reach the local server — is <strong>bun run dev</strong> running?", true);
+    CHAINS = OO.CHAINS;
+  } catch (err) {
+    setNote(`Could not start: ${esc(err.message || err)}`, true);
     return;
   }
   $("chainQ").placeholder = `Search ${CHAINS.length} chains…`;
@@ -801,13 +802,25 @@ async function boot() {
 
   // Chain logos need a token list per chain, so fetch them alongside the first
   // token load rather than blocking the page. Initials show until they land.
-  const icons = fetch("/api/chainIcons")
-    .then((r) => (r.ok ? r.json() : {}))
-    .then((map) => {
-      CHAIN_ICONS = map || {};
-      if (SEL.chain) pickers.chain.set(SEL.chain); // upgrade the trigger
-    })
-    .catch(() => {});
+  const icons = (async () => {
+    // Built-in marks resolve instantly; the rest need that chain's token list,
+    // so fetch them in small batches and repaint as they arrive.
+    for (const c of CHAINS) if (OO.CHAIN_MARKS[c.code]) CHAIN_ICONS[c.code] = OO.CHAIN_MARKS[c.code];
+    if (SEL.chain) pickers.chain.set(SEL.chain);
+
+    const rest = CHAINS.filter((c) => !CHAIN_ICONS[c.code]);
+    for (let i = 0; i < rest.length; i += 6) {
+      await Promise.all(
+        rest.slice(i, i + 6).map(async (c) => {
+          try {
+            const url = await OO.iconFor(c);
+            if (url) CHAIN_ICONS[c.code] = url;
+          } catch {}
+        }),
+      );
+    }
+    if (SEL.chain) pickers.chain.set(SEL.chain);
+  })().catch(() => {});
 
   await Promise.all([loadTokensFor(start.code), icons]);
 }
@@ -876,21 +889,96 @@ function renderDexTable(d) {
     </details>`;
 }
 
+/**
+ * Replaces the old /api/* proxy. Resolves symbols/addresses against the live
+ * token list, calls OpenOcean directly, and returns the same
+ * { url, data, count?, tokens? } shape the server used to send.
+ */
+async function callApi(endpoint, withAccount) {
+  const chain = SEL.chain?.code ?? "bsc";
+
+  if (endpoint === "gasPrice") {
+    return {
+      url: OO.upstreamUrl(chain, "gasPrice", {}),
+      data: await OO.getGasPrice(chain),
+    };
+  }
+
+  if (endpoint === "tokens") {
+    const tokens = await OO.loadTokens(chain);
+    return {
+      url: OO.upstreamUrl(chain, "tokenList", {}),
+      count: tokens.length,
+      tokens,
+    };
+  }
+
+  const inAddr = SEL.in?.address;
+  const outAddr = SEL.out?.address;
+  if (!inAddr || !outAddr) throw new Error("Pick both tokens first.");
+
+  const req = {
+    inTokenAddress: inAddr,
+    outTokenAddress: outAddr,
+    amount: $("amount").value.trim(),
+    gasPrice: $("gasPrice").value.trim() || "3",
+    slippage: $("slippage").value.trim() || "1",
+  };
+  if (!req.amount) throw new Error("Enter an amount.");
+
+  const account = endpoint === "swap" ? $("account").value.trim() : "";
+  if (endpoint === "swap" && !account) {
+    throw new Error("An account address is required for /swap — use /quote for price only.");
+  }
+
+  const params = endpoint === "swap" ? { ...req, account } : req;
+
+  /**
+   * Direct browser call first — that's how the deployed app works, with no
+   * server involved. Cloudflare gates /quote and /swap on the Referer, and a
+   * real https origin passes; `http://localhost` does NOT, so in local dev the
+   * direct call 403s and we retry through the dev server, which sets the header
+   * itself. Production never takes the fallback (there is nothing to fall back
+   * to, and it doesn't need one).
+   */
+  let data;
+  try {
+    data =
+      endpoint === "swap"
+        ? await OO.getSwapQuote(chain, params)
+        : await OO.getQuote(chain, req);
+  } catch (err) {
+    const gated = /403|Cloudflare/i.test(String(err?.message ?? err));
+    if (!gated) throw err;
+
+    const qs = new URLSearchParams({ chain, ...req });
+    if (account) qs.set("account", account);
+    qs.set("in", req.inTokenAddress);
+    qs.set("out", req.outTokenAddress);
+    qs.delete("inTokenAddress");
+    qs.delete("outTokenAddress");
+
+    const res = await fetch(`/api/${endpoint}?${qs}`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || "Request failed");
+    data = body;
+  }
+
+  return {
+    url: OO.upstreamUrl(chain, endpoint === "swap" ? "swap" : "quote", params),
+    data: { ...data, _analysis: OO.analyse(data) },
+  };
+}
+
 async function call(endpoint, withAccount) {
   const out = $("out");
   out.innerHTML = `<div class="card"><div class="loading"><span class="spin"></span>Calling ${esc(endpoint)}…</div></div>`;
 
   try {
-    const res = await fetch(`/api/${endpoint}?${params(withAccount)}`);
-    const body = await res.json();
-
-    if (!res.ok) {
-      out.innerHTML = `<div class="card"><div class="err">
-        <strong>${esc(body.error ?? "Request failed")}</strong>
-        ${body.body ? `<code>${esc(JSON.stringify(body.body).slice(0, 400))}</code>` : ""}
-      </div></div>`;
-      return;
-    }
+    // Calls OpenOcean directly — no proxy. `body` keeps the shape the old
+    // server returned ({ url, data, count?, tokens? }) so the renderers below
+    // are unchanged.
+    const body = await callApi(endpoint, withAccount);
 
     if (endpoint === "gasPrice" || endpoint === "tokens") {
       out.innerHTML = `<div class="card">

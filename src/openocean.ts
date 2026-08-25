@@ -70,11 +70,25 @@ function toQuery(params: Record<string, string | number | undefined | null>) {
  * We send a User-Agent too, purely so the traffic is identifiable rather than
  * anonymous — it isn't required to pass.
  */
-const WAF_HEADERS: Record<string, string> = {
-  accept: "application/json, text/plain, */*",
-  referer: "https://app.openocean.finance/",
-  "user-agent": "openocean-playground/1.0 (+bun)",
-};
+const IN_BROWSER = typeof window !== "undefined";
+
+/**
+ * `Referer` and `User-Agent` are FORBIDDEN HEADERS in browsers — the fetch spec
+ * makes them unsettable from JS, and passing them can also push a simple GET
+ * into a CORS preflight for no benefit. In a browser we send only `accept` and
+ * let the page's own Referer satisfy the WAF (verified: /quote, /swap,
+ * /tokenList and /gasPrice all return 200 from a deployed origin).
+ *
+ * Server-side (CLI, or any non-browser runtime) there is no automatic Referer,
+ * so we must set it explicitly or /quote and /swap 403.
+ */
+const WAF_HEADERS: Record<string, string> = IN_BROWSER
+  ? { accept: "application/json, text/plain, */*" }
+  : {
+      accept: "application/json, text/plain, */*",
+      referer: "https://app.openocean.finance/",
+      "user-agent": "openocean-playground/1.0 (+bun)",
+    };
 
 async function request<T>(
   chain: string,
