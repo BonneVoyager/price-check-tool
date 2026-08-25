@@ -222,6 +222,7 @@ input.control::placeholder { color: var(--text-faint); font-family: var(--sans);
 .pill.native { background: rgba(255, 180, 84, .15); color: var(--amber); }
 .pill.hot { background: var(--accent-glow); color: var(--accent); }
 .pill.evm { background: var(--surface-3); color: var(--text-dim); }
+.pill.custom { background: rgba(255,180,84,.15); color: var(--amber); }
 .opt-usd { font: 11.5px/1 var(--mono); color: var(--text-dim); flex: 0 0 auto; }
 .pop-empty { padding: 22px 14px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
 
@@ -236,12 +237,25 @@ input.control::placeholder { color: var(--text-faint); font-family: var(--sans);
   color: var(--text); font: 500 13px/1 var(--sans); cursor: pointer;
   display: inline-flex; align-items: center; gap: 7px; transition: all .13s;
 }
-.btn:hover:not(:disabled) { border-color: var(--surface-3); background: var(--surface-3); }
+/* Scoped to :not(.primary): a bare .btn:hover rule wins on specificity
+   (0,4,0 vs 0,2,0 for .btn.primary) and would repaint the primary button grey
+   while its text stayed white — i.e. white-on-white. */
+.btn:not(.primary):hover:not(:disabled) {
+  border-color: var(--surface-3);
+  background: var(--surface-3);
+}
 .btn.primary {
   background: var(--accent); border-color: var(--accent); color: #fff;
   font-weight: 600; box-shadow: 0 2px 10px rgba(76, 141, 255, .28);
 }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.btn.primary:hover:not(:disabled) {
+  /* Darken rather than brighten: brightness() on an already-light accent
+     washes it out in light mode. color-mix keeps contrast with white text. */
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+  border-color: color-mix(in srgb, var(--accent) 88%, #000);
+  box-shadow: 0 3px 14px rgba(76, 141, 255, .38);
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn code { font: 12px/1 var(--mono); opacity: .85; }
 
@@ -547,7 +561,7 @@ function makePicker({ key, wrap, getItems, row, groups, onPick }) {
 
     if (!view.length) {
       el.list.innerHTML =
-        `<div class="pop-empty">No match.<br />Paste a full address to use it anyway.</div>`;
+        `<div class="pop-empty">No match.<br />Paste a full token address to use one that isn't listed.</div>`;
       return;
     }
     let html = "", lastGroup = null;
@@ -641,9 +655,10 @@ const tokenRow = (t, i, on, sel) => `
     ${iconHtml(t, "tk-ico")}
     <span class="opt-main">
       <div class="opt-sym">${esc(t.symbol)}</div>
-      <div class="opt-nm">${esc(t.name || short(t.address))}</div>
+      <div class="opt-nm">${esc(t.isCustom ? t.address : t.name || short(t.address))}</div>
     </span>
-    ${t.isNative ? `<span class="pill native">native</span>`
+    ${t.isCustom ? `<span class="pill custom">unlisted</span>`
+      : t.isNative ? `<span class="pill native">native</span>`
       : t.isHot ? `<span class="pill hot">hot</span>` : ""}
     ${t.usd != null ? `<span class="opt-usd">$${esc(String(t.usd))}</span>` : ""}
   </div>`;
@@ -659,6 +674,33 @@ function chainItems(q) {
       c.code.toLowerCase().includes(v) ||
       String(c.id ?? "").includes(v),
   );
+}
+
+/** Looks like a token address we could pass through unlisted? */
+function looksLikeAddress(s) {
+  const v = (s || "").trim();
+  return /^0x[a-fA-F0-9]{40}$/.test(v) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v);
+}
+
+/**
+ * Synthetic entry for an address that isn't in the token list.
+ *
+ * tokenList is a curated display list, NOT a whitelist — OpenOcean quotes any
+ * token with routable liquidity and reads symbol/decimals from the contract.
+ * (Verified: OHM on eth and HOOK on bsc both quote and return real calldata
+ * while absent from their chain's list.) So a pasted address has to be usable,
+ * or the UI would be more restrictive than the API it's demonstrating.
+ */
+function customToken(addr) {
+  return {
+    address: addr.trim(),
+    symbol: "Custom token",
+    name: "Not in list — resolved by the API from the contract",
+    decimals: 18, // display-only; the response carries the real value
+    isNative: false,
+    isHot: false,
+    isCustom: true,
+  };
 }
 
 /** Rank: address hit, exact symbol, symbol prefix, symbol substring, then name. */
@@ -680,7 +722,11 @@ function tokenItems(q) {
     if (k >= 0) scored.push([k, t]);
   }
   scored.sort((a, b) => a[0] - b[0]);
-  return scored.slice(0, 80).map((x) => x[1]);
+  const hits = scored.slice(0, 80).map((x) => x[1]);
+
+  // A pasted address that matched nothing is still swappable — offer it.
+  if (!hits.length && looksLikeAddress(raw)) return [customToken(raw)];
+  return hits;
 }
 
 /** Group headers only on the unfiltered list, where the split means something. */

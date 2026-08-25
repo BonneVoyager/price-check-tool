@@ -26,11 +26,19 @@ import type { OoQuote, OoSwap } from "./types.ts";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+/**
+ * `cache` sets s-maxage so Vercel's CDN can serve repeats without invoking the
+ * function. This matters in serverless: the in-process token/icon caches only
+ * live as long as a warm instance, so without an HTTP cache every cold start
+ * would re-fetch upstream. Harmless locally — browsers honour it, and the
+ * numbers are short enough that prices stay fresh.
+ */
+function json(data: unknown, status = 200, cache?: number) {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (cache && status === 200) {
+    headers["cache-control"] = `public, s-maxage=${cache}, stale-while-revalidate=${cache * 2}`;
+  }
+  return new Response(JSON.stringify(data, null, 2), { status, headers });
 }
 
 /** Turn any thrown value into a useful JSON error for the frontend. */
@@ -95,21 +103,31 @@ const server = Bun.serve({
      * Read from disk per request rather than baking a Response at startup —
      * otherwise editing index.html does nothing until the server restarts,
      * which is a confusing way to lose ten minutes.
+     *
+     * Resolved relative to THIS file, not the process cwd: on Vercel the
+     * function runs from a different working directory than the repo root, so
+     * a bare "public/index.html" would 404 in production while working locally.
      */
-    "/": async () =>
-      new Response(Bun.file("public/index.html"), {
+    "/": async () => {
+      const file = Bun.file(new URL("../public/index.html", import.meta.url));
+      if (!(await file.exists())) {
+        return new Response("index.html not found", { status: 500 });
+      }
+      return new Response(file, {
         headers: {
           "content-type": "text/html; charset=utf-8",
+          // Dev convenience; the page is tiny and always re-fetches its data.
           "cache-control": "no-store",
         },
-      }),
+      });
+    },
 
     /**
      * Chain list. Icons are resolved from token lists, which means 42 upstream
      * fetches on a cold cache — too slow to block the page on. So this returns
      * immediately without icons, and the UI fills them in from /api/chainIcons.
      */
-    "/api/chains": () => json(CHAINS),
+    "/api/chains": () => json(CHAINS, 200, 3600),
 
     /**
      * Chain logos, resolved lazily so the picker can render instantly and
@@ -120,7 +138,7 @@ const server = Bun.serve({
         const withIcons = await chainsWithIcons(CHAINS);
         const map: Record<string, string> = {};
         for (const c of withIcons) if (c.icon) map[c.code] = c.icon;
-        return json(map);
+        return json(map, 200, 3600);
       } catch (err) {
         return errorResponse(err);
       }
@@ -134,12 +152,16 @@ const server = Bun.serve({
       const chain = new URL(req.url).searchParams.get("chain") ?? "bsc";
       try {
         const tokens = await loadTokens(chain);
-        return json({
-          url: upstreamUrl(chain, "tokenList", {}),
-          chain,
-          count: tokens.length,
-          tokens,
-        });
+        return json(
+          {
+            url: upstreamUrl(chain, "tokenList", {}),
+            chain,
+            count: tokens.length,
+            tokens,
+          },
+          200,
+          600,
+        );
       } catch (err) {
         return errorResponse(err);
       }

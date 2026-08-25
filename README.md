@@ -8,6 +8,11 @@ bun install
 bun run dev          # → http://localhost:3000
 ```
 
+The UI follows your OS appearance — dark is the default, light is a full re-map.
+There's no in-app toggle; switch it in System Settings › Appearance (macOS) and
+the page updates on reload. (To force one, override the `:root` tokens in
+`public/index.html` and delete the `prefers-color-scheme` block.)
+
 ---
 
 ## Which route should you use?
@@ -125,6 +130,31 @@ responses:
 
 Solana uses `So1111…1112` for native, not the EVM sentinel.
 
+**tokenList is a display list, not a whitelist.** OpenOcean quotes *any* token
+with routable liquidity — the list is only what their UI chooses to show. Proven
+empirically, since the docs never state it either way:
+
+| Token | In its chain's `tokenList`? | `/quote` | `/swap` calldata |
+|---|---|---|---|
+| OHM (eth) | **no** | ✅ 1 OHM → 18.09 USDC via UniswapV3 | ✅ 3850-char calldata |
+| HOOK (bsc) | **no** | ✅ routed across 4 venues | — |
+
+The API reads `symbol` and `decimals` straight from the contract: OHM came back
+with its non-standard **9** decimals, which no local list supplied. So the real
+constraint is *routable liquidity*, not membership.
+
+Two consequences for this playground:
+
+- `/api/quote` and `/api/swap` pass any unrecognised `0x…` address straight
+  through, and only reject unknown *symbols* (which are genuinely unresolvable).
+- The token picker offers a pasted address as an **unlisted** entry, so the UI
+  isn't more restrictive than the API it demonstrates.
+
+A failed quote on a valid-looking address means no route, not a rejected token —
+an address that isn't a contract at all returns the same generic
+`code: 500 "Quote api error"` as a real token with no liquidity, so check the
+contract exists before assuming the token is unsupported.
+
 **Chain icons.** The API has no chain-logo field, and OpenOcean's own app uses
 hashed build assets (`/img/sonic.2305224a.svg`) that break on their next deploy.
 So logos resolve in two tiers, served from `/api/chainIcons`:
@@ -179,6 +209,57 @@ public/index.html frontend (single file, no build)
 The frontend calls the API **through the local server**, not directly:
 `open-api.openocean.finance` doesn't reliably send CORS headers, and the proxy
 also lets the UI show you the exact upstream URL for every call.
+
+---
+
+## Deploying to Vercel
+
+Vercel has a **Bun framework preset** that runs `Bun.serve()` directly, so this
+deploys essentially as-is — no rewrite to serverless handlers, no `/api`
+directory, no Express shim.
+
+The preset needs three things, all already in place: `bun.lock`, a `server.ts`
+entrypoint in the project root or `src/` (ours is [src/server.ts](src/server.ts)),
+and [vercel.json](vercel.json) pinning the runtime:
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "bunVersion": "1.4.x",
+  "functions": { "src/server.ts": { "maxDuration": 60 } }
+}
+```
+
+Then either push to a Git repo and import it at vercel.com, or deploy from here:
+
+```bash
+bunx vercel --prod
+```
+
+No environment variables are needed — the OpenOcean API takes no key.
+
+### Three things that had to change for serverless
+
+- **`Bun.file` path.** The `/` route read `"public/index.html"` relative to the
+  process cwd. That works locally and 404s in production, because the function
+  doesn't run from the repo root. Now resolved against `import.meta.url`.
+- **HTTP caching.** The token and icon caches are plain in-process `Map`s, which
+  live only as long as a warm instance — every cold start would re-fetch
+  upstream. `/api/chains` and `/api/chainIcons` now send `s-maxage=3600`,
+  `/api/tokens` 600s, so Vercel's CDN absorbs the repeats. `/api/quote` and
+  `/api/swap` deliberately send **no** cache header: those are live prices.
+- **Duration.** A cold `/api/chainIcons` fans out to ~30 token lists, so the
+  function gets `maxDuration: 60` to match the server's own `idleTimeout: 30`.
+
+### Caveats
+
+- **The CLI won't run on Vercel** — `bun run quote` and friends are local-only
+  tools. Only the web app deploys.
+- **The `Referer` header still matters.** It's set server-side in
+  `WAF_HEADERS`, so it works from Vercel exactly as locally. If you ever move
+  these calls into the browser, they'll start 403ing.
+- **Cold starts** hit the ~2.8s icon fan-out once per instance. The page paints
+  immediately regardless — icons upgrade from initials when they land.
 
 ---
 
