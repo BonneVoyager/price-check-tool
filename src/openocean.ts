@@ -87,7 +87,7 @@ const WAF_HEADERS: Record<string, string> = IN_BROWSER
   : {
       accept: "application/json, text/plain, */*",
       referer: "https://app.openocean.finance/",
-      "user-agent": "openocean-playground/1.0 (+bun)",
+      "user-agent": "price-check-tool/1.0 (+bun)",
     };
 
 async function request<T>(

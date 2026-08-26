@@ -1,5 +1,5 @@
 {
-  "name": "openocean-playground",
+  "name": "price-check-tool",
   "module": "src/server.ts",
   "type": "module",
   "private": true,

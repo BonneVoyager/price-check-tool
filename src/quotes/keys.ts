@@ -6,7 +6,7 @@
  * — and to anyone who fetches the JS directly. There is no way to hide a key in
  * a browser-only app; a "secret" in client code is not a secret.
  *
- * That is an acceptable trade for a playground with free-tier keys. It is NOT
+ * That is an acceptable trade for a local tool with free-tier keys. It is NOT
  * acceptable for anything metered, paid, or rate-limited against your quota.
  *
  * If a key here matters to you:

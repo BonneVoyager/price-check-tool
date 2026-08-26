@@ -199,7 +199,7 @@ try {
 
     default:
       console.log(`
-  OpenOcean playground CLI
+  Price Check Tool CLI
 
     bun run quote  -- --chain bsc --in BNB --out USDT --amount 1
     bun run swap   -- --chain bsc --in BNB --out USDT --amount 1 --account 0xYourAddress

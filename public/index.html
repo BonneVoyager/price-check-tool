@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>OpenOcean v4 Playground</title>
+<title>Price Check Tool</title>
 <style>
 /* ===========================================================================
    Design tokens. Dark is the primary theme; light is a full re-map rather than
@@ -240,7 +240,10 @@ input.control::placeholder { color: var(--text-faint); font-family: var(--sans);
 /* Scoped to :not(.primary): a bare .btn:hover rule wins on specificity
    (0,4,0 vs 0,2,0 for .btn.primary) and would repaint the primary button grey
    while its text stayed white — i.e. white-on-white. */
-.btn:not(.primary):hover:not(:disabled) {
+/* Scoped away from .primary AND .hero: this rule's specificity (0,4,0) beats
+   both of their (0,2,0) declarations, so without the exclusion it replaces
+   their gradient/accent background with grey on hover. */
+.btn:not(.primary):not(.hero):hover:not(:disabled) {
   border-color: var(--surface-3);
   background: var(--surface-3);
 }
@@ -255,7 +258,7 @@ input.control::placeholder { color: var(--text-faint); font-family: var(--sans);
   border-color: color-mix(in srgb, var(--accent) 88%, #000);
   box-shadow: 0 3px 14px rgba(76, 141, 255, .38);
 }
-.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:not(.hero):active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn code { font: 12px/1 var(--mono); opacity: .85; }
 
@@ -409,26 +412,34 @@ summary:hover { color: var(--text); }
    a saturated gradient reads as a glowing halo rather than elevation, which is
    what the first attempt looked like. Depth comes from a tight shadow plus a
    1px top inset highlight; hover darkens and lifts by 1px instead of blooming. */
+/* Hero button.
+   Two things it deliberately does NOT do, both fixed after they read as bugs:
+   no `transform` (the button appeared to jump on hover), and no `brightness()`
+   below 1 (it desaturated the gradient toward grey). Hover instead brightens
+   the gradient itself via a lighter colour pair — the hue is preserved, so it
+   reads as the same button lit up rather than a different, greyer one. */
 .btn.hero {
-  background: linear-gradient(135deg, var(--accent), #6d5cf0);
+  --hero-a: var(--accent);
+  --hero-b: #6d5cf0;
+  background: linear-gradient(135deg, var(--hero-a), var(--hero-b));
   border: 1px solid transparent; color: #fff; font-weight: 650;
   height: 40px; padding: 0 18px;
-  box-shadow:
-    0 1px 2px rgba(10, 14, 22, .35),
-    inset 0 1px 0 rgba(255, 255, 255, .16);
-  transition: transform .12s, filter .12s, box-shadow .12s;
+  box-shadow: 0 1px 2px rgba(10, 14, 22, .3);
+  transition: background .14s ease, box-shadow .14s ease;
 }
 .btn.hero:hover:not(:disabled) {
-  filter: saturate(1.06) brightness(.96);
-  transform: translateY(-1px);
-  box-shadow:
-    0 3px 8px rgba(10, 14, 22, .4),
-    inset 0 1px 0 rgba(255, 255, 255, .2);
+  --hero-a: color-mix(in srgb, var(--accent) 82%, #fff);
+  --hero-b: color-mix(in srgb, #6d5cf0 82%, #fff);
+  box-shadow: 0 2px 6px rgba(10, 14, 22, .34);
 }
 .btn.hero:active:not(:disabled) {
-  transform: translateY(0);
-  filter: brightness(.92);
-  box-shadow: inset 0 1px 3px rgba(10, 14, 22, .3);
+  --hero-a: color-mix(in srgb, var(--accent) 88%, #000);
+  --hero-b: color-mix(in srgb, #6d5cf0 88%, #000);
+  box-shadow: inset 0 1px 2px rgba(10, 14, 22, .28);
+}
+.btn.hero:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, #fff);
+  outline-offset: 2px;
 }
 .btn.hero svg { opacity: .95; }
 .actions .spacer { flex: 1; }
@@ -470,14 +481,15 @@ summary:hover { color: var(--text); }
           <path d="M3 9c2.5 0 2.5-2.5 5-2.5S10.5 9 13 9s2.5-2.5 5-2.5S20.5 9 21 9" opacity=".5"/>
         </svg>
       </div>
-      <h1>OpenOcean Playground</h1>
-      <span class="tag-v">v4</span>
+      <h1>Price Check Tool</h1>
+      <span class="tag-v" id="srcCount">sources</span>
     </div>
     <p class="lede">
-      <strong>quote</strong> returns price and the per-DEX comparison with no wallet.
-      <strong>swap</strong> returns the same route plus signable
-      <code>to</code>/<code>data</code>/<code>value</code>, and needs an account.
-      Amounts sent are human-readable; amounts returned are base units.
+      Compare swap quotes across aggregators, DEX routers and on-chain pools on
+      one pair, side by side. <strong>Compare all sources</strong> fans the same
+      request out to every source that covers the chain and ranks what comes
+      back. The <code>/quote</code> and <code>/swap</code> buttons hit OpenOcean
+      directly, for inspecting one API's raw response.
     </p>
   </header>
 
@@ -919,6 +931,9 @@ async function boot() {
 
   try {
     CHAINS = OO.CHAINS;
+    // Derived, not hardcoded — the badge can't drift as adapters are added.
+    const badge = $("srcCount");
+    if (badge) badge.textContent = `${OO.ADAPTERS.length} sources`;
   } catch (err) {
     setNote(`Could not start: ${esc(err.message || err)}`, true);
     return;

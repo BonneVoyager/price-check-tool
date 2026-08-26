@@ -104,6 +104,13 @@ export const CHAIN_MARKS: Record<string, string> = {
     `${circle("#0C0C4F")}<path d="M16 6.5l2.6 5.4 5.9.9-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9-4.3-4.1 5.9-.9L16 6.5z" fill="#FF8A00"/><circle cx="16" cy="15.4" r="2.1" fill="#0C0C4F"/>`,
   ),
 
+  // Gravity — the one chain with no icon anywhere: DefiLlama has no entry, and
+  // its native ticker "G" 404s on every symbol CDN (too short to be unique).
+  // Orange disc with a white G, matching Gravity's brand colour.
+  gravity: svg(
+    `${circle("#FF5C00")}<path d="M20.6 12.4a5.6 5.6 0 1 0 .6 5.2h-5V15h7.6v1.2a8.2 8.2 0 1 1-1.6-5l-1.6 1.2z" fill="#fff"/>`,
+  ),
+
   // Stellar — black with the white rocket/orbit glyph.
   stellar: svg(
     `${circle("#0F0F0F")}<path d="M24.5 9.9l-3 1.5a7.4 7.4 0 0 0-11 7.7l-2.9 1.5-.9-1.8 2.6-1.3a9.4 9.4 0 0 1 13.9-9.4l1.3.6v1.2z" fill="#fff"/><path d="M7.5 22.1l3-1.5a7.4 7.4 0 0 0 11-7.7l2.9-1.5.9 1.8-2.6 1.3a9.4 9.4 0 0 1-13.9 9.4l-1.3-.6v-1.2z" fill="#fff"/>`,

@@ -64,4 +64,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`\n  OpenOcean playground → http://localhost:${server.port}\n`);
+console.log(`\n  Price Check Tool → http://localhost:${server.port}\n`);

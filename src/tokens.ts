@@ -39,6 +39,42 @@ export interface UiToken {
 }
 
 
+
+/**
+ * DefiLlama chain icons, keyed by their own chain slug.
+ *
+ * Added because the previous two tiers both failed for a cluster of newer
+ * chains. The token-list tier has nothing for chains OpenOcean doesn't serve,
+ * and the CoinCap symbol tier 404s for their native tickers — verified:
+ * `mon`, `xdai`, `plume`, `tac` and `g` all return a 404 HTML page, not an
+ * image. DefiLlama keys by CHAIN rather than ticker, which is the right shape
+ * for this, and covers 42/44 (only Gravity misses; Starknet has an inline mark).
+ *
+ * Slugs are NOT our codes — `xdai`→`gnosis`, `hyperevm`→`hyperliquid`,
+ * `okex`→`okexchain`, and two contain a space (`zksync era`, `polygon zkevm`),
+ * so the value is URL-encoded.
+ */
+const LLAMA_CHAIN_SLUG: Record<string, string> = {
+  eth: "ethereum", bsc: "bsc", base: "base", arbitrum: "arbitrum",
+  polygon: "polygon", optimism: "optimism", avax: "avalanche",
+  solana: "solana", fantom: "fantom", sonic: "sonic", linea: "linea",
+  scroll: "scroll", zksync: "zksync era", mantle: "mantle", blast: "blast",
+  mode: "mode", manta: "manta", bera: "berachain", sei: "sei",
+  hyperevm: "hyperliquid", monad: "monad", cronos: "cronos", celo: "celo",
+  xdai: "gnosis", kava: "kava", metis: "metis", aurora: "aurora",
+  moonriver: "moonriver", harmony: "harmony", okex: "okexchain",
+  telos: "telos", flare: "flare", rootstock: "rootstock",
+  polygon_zkevm: "polygon zkevm", opbnb: "opbnb", ape: "apechain",
+  gravity: "gravity", plume: "plume", tac: "tac", sui: "sui",
+  aptos: "aptos", near: "near", starknet: "starknet", stellar: "stellar",
+};
+
+function llamaChainIcon(chainCode: string): string | undefined {
+  const slug = LLAMA_CHAIN_SLUG[chainCode];
+  if (!slug) return undefined;
+  return `https://icons.llamao.fi/icons/chains/rsz_${encodeURIComponent(slug)}.jpg`;
+}
+
 /**
  * Fallback icon by SYMBOL, for tokens whose source list carries no icon URL.
  *
@@ -223,6 +259,14 @@ export async function chainIcon(chain: ChainInfo): Promise<string | null> {
   if (mark) {
     iconCache.set(chain.code, mark);
     return mark;
+  }
+
+  // DefiLlama keys by chain, so it covers newer chains whose native TICKER the
+  // symbol tier can't find (MON, XDAI, PLUME, TAC, G all 404 on CoinCap).
+  const llama = llamaChainIcon(chain.code);
+  if (llama) {
+    iconCache.set(chain.code, llama);
+    return llama;
   }
 
   let icon: string | null = null;

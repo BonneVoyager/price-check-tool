@@ -1,6 +1,10 @@
-# OpenOcean v4 Playground
+# Price Check Tool
 
-Zero runtime dependencies. TypeScript + Bun, vanilla HTML/CSS/JS frontend, no build step.
+Compare swap quotes across **19 sources** — aggregators, DEX routers, RFQ market
+makers, solver networks and a direct on-chain pool read — on one pair, side by
+side, across **44 chains** (EVM, Solana, Sui, Aptos, NEAR, Starknet, Stellar).
+
+Zero runtime dependencies. TypeScript + Bun, vanilla HTML/CSS/JS frontend.
 Only devDependency is `@types/bun`.
 
 ```bash
@@ -9,7 +13,13 @@ bun run dev          # → http://localhost:3000
 ```
 
 Static site, no backend: `bun run build` emits `public/app.js` and the page
-talks to OpenOcean directly. See [Deploying to Vercel](#deploying-to-vercel).
+calls every source directly from the browser. See
+[Deploying to Vercel](#deploying-to-vercel).
+
+It started as an OpenOcean v4 playground, which is why the OpenOcean client is
+still the most thoroughly documented part below — the `/quote` vs `/swap`
+sections are about that one API, while
+[Comparing aggregators](#comparing-aggregators) covers all 19.
 
 The UI follows your OS appearance — dark is the default, light is a full re-map.
 There's no in-app toggle; switch it in System Settings › Appearance (macOS) and
@@ -20,7 +30,7 @@ the page updates on reload. (To force one, override the `:root` tokens in
 
 ## Which route should you use?
 
-This is the question the playground is built to answer. There are two endpoints
+This is the question the OpenOcean client is built to answer. There are two endpoints
 that both compute a route, and picking the wrong one is the usual first stumble.
 
 | | `GET /v4/{chain}/quote` | `GET /v4/{chain}/swap` |
@@ -146,7 +156,7 @@ The API reads `symbol` and `decimals` straight from the contract: OHM came back
 with its non-standard **9** decimals, which no local list supplied. So the real
 constraint is *routable liquidity*, not membership.
 
-Two consequences for this playground:
+Two consequences here:
 
 - `/api/quote` and `/api/swap` pass any unrecognised `0x…` address straight
   through, and only reject unknown *symbols* (which are genuinely unresolvable).
@@ -158,7 +168,26 @@ an address that isn't a contract at all returns the same generic
 `code: 500 "Quote api error"` as a real token with no liquidity, so check the
 contract exists before assuming the token is unsupported.
 
-**Token icons resolve in three tiers**, in [src/tokens.ts](src/tokens.ts):
+**Chain icons resolve in three tiers**, in [src/tokens.ts](src/tokens.ts):
+
+1. a built-in inline mark from [src/chain-marks.ts](src/chain-marks.ts) (15 of them);
+2. otherwise **DefiLlama by chain slug** —
+   `icons.llamao.fi/icons/chains/rsz_{slug}.jpg`, keyless;
+3. otherwise the chain's native/wrapped token icon from OpenOcean's list.
+
+Tier 2 was added after tier 3 and the symbol fallback both failed for a cluster
+of newer chains. Keying by **ticker** doesn't work for them — `mon`, `xdai`,
+`plume`, `tac` and `g` all return a 404 HTML page on CoinCap, not an image —
+whereas DefiLlama keys by *chain*, which is the right shape, and covers 42/44.
+Its slugs are not our codes (`xdai`→`gnosis`, `hyperevm`→`hyperliquid`,
+`okex`→`okexchain`) and two contain a space (`zksync era`, `polygon zkevm`), so
+the slug is URL-encoded.
+
+**Gravity** is the one chain with no icon anywhere — no DefiLlama entry, and its
+`G` ticker is too short to be unique on any symbol CDN — so it gets an inline
+mark. Result: 44/44 chains render an icon, verified in-browser with no scrolling.
+
+**Token icons resolve in three tiers** too:
 
 1. the `icon` URL from OpenOcean's `tokenList`, when there is one;
 2. otherwise **CoinCap by symbol** — `assets.coincap.io/assets/icons/{sym}@2x.png`,
@@ -444,7 +473,7 @@ Two sources need keys, and a browser-only app cannot hide either. `app.js` is
 public: anything in it is visible in DevTools and to anyone who fetches the file.
 
 - **Enso** works from the browser, so its key is compiled into the bundle and
-  is **public by necessity**. Fine for a playground on a free tier; for anything
+  is **public by necessity**. Fine for a local tool on a free tier; for anything
   metered, restrict the key by allowed origin in Enso's dashboard, or move the
   call behind a server route.
 - **0x** sends no `access-control-allow-origin` header at all — its OPTIONS
@@ -552,7 +581,7 @@ Caveats worth keeping in mind: quotes are indicative and move between blocks, so
 re-running reshuffles near-ties. Gas and each source's own fees are **not**
 deducted, so the ranking is gross output, not net. KyberSwap and ParaSwap are
 quote-only here — both can execute, but each needs a second call to build
-calldata that this playground doesn't make.
+calldata that this tool doesn't make.
 
 ---
 
