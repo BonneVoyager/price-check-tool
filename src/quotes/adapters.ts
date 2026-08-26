@@ -11,7 +11,7 @@
  */
 
 import { CHAINS, type ChainInfo } from "../chains.ts";
-import { ENSO_API_KEY, ZEROX_API_KEY } from "./keys.ts";
+import { ENSO_API_KEY, SOROSWAP_API_KEY, ZEROX_API_KEY } from "./keys.ts";
 import { getQuote, toBaseUnits } from "../openocean.ts";
 import {
   NoRouteError,
@@ -137,7 +137,7 @@ const dedupeVenues = (names: (string | undefined)[]): NormalVenue[] => {
  * verified against its tokenList, so an exclusion list stays smaller and won't
  * silently drop a chain when the registry grows.
  */
-const OPENOCEAN_EXCLUDES = new Set(["starknet"]);
+const OPENOCEAN_EXCLUDES = new Set(["starknet", "stellar"]);
 const OPENOCEAN_CHAINS = new Set(
   CHAINS.filter((c) => !OPENOCEAN_EXCLUDES.has(c.code)).map((c) => c.code),
 );
@@ -492,11 +492,16 @@ async function postJson(
   url: string,
   body: unknown,
   signal: AbortSignal,
+  headers?: Record<string, string>,
 ): Promise<Record<string, any>> {
   const res = await fetch(url, {
     method: "POST",
     signal,
-    headers: { "content-type": "application/json", accept: "application/json" },
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      ...headers,
+    },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -507,9 +512,12 @@ async function postJson(
     throw new Error(`Non-JSON response (HTTP ${res.status})`);
   }
   if (!res.ok) {
-    throw new NoRouteError(
+    const raw = String(
       json.description ?? json.message ?? json.errorType ?? `HTTP ${res.status}`,
     );
+    // Several of these APIs return multi-line diagnostics; the first line is
+    // the actual reason and the rest is context that would blow out the table.
+    throw new NoRouteError(raw.split("\n")[0]!.trim());
   }
   return json;
 }
@@ -564,6 +572,7 @@ const cow: QuoteAdapter = {
     return {
       source: "cow",
       label: "CoW Swap",
+      kind: "intent",
       // buyAmount is already net of CoW's fee — comparable to the others'
       // gross output only loosely. Called out in the UI footnote.
       outAmount: String(q.buyAmount),
@@ -643,6 +652,7 @@ const bebop: QuoteAdapter = {
     return {
       source: "bebop",
       label: "Bebop",
+      kind: "rfq",
       outAmount: String(entry.amount),
       outDecimals: entry.decimals ?? req.outToken.decimals,
       priceImpact:
@@ -845,6 +855,10 @@ const ONECLICK_PLACEHOLDER: Record<string, string> = {
   starknet: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
   tron: "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
   ton: "UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+  // Stellar additionally requires the recipient to hold a TRUSTLINE for the
+  // destination asset, so no placeholder works for non-native destinations —
+  // see the note in the adapter.
+  stellar: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
 };
 
 /** Our chain code -> 1Click's `blockchain` value. */
@@ -867,6 +881,7 @@ const ONECLICK_CHAINS: Record<string, string> = {
   starknet: "starknet",
   ton: "ton",
   tron: "tron",
+  stellar: "stellar",
 };
 
 interface OneClickAsset {
@@ -906,7 +921,24 @@ function findOneClickAsset(
 ): OneClickAsset | undefined {
   const onChain = assets.filter((a) => a.blockchain === chainKey);
   const addr = token.address.toLowerCase();
-  const isNative = isNativeSentinel(token.address) || addr.startsWith("so1111");
+  const isNative =
+    isNativeSentinel(token.address) ||
+    addr.startsWith("so1111") ||
+    addr === "native"; // Stellar's native asset
+
+  // Stellar: our addresses are `native` or `CODE:ISSUER`, but 1Click stores the
+  // bare ISSUER in contractAddress (and nothing for XLM). Match on the issuer
+  // half, falling back to symbol.
+  if (chainKey === "stellar" && !isNative) {
+    const [code, issuer] = token.address.split(":");
+    const hit =
+      (issuer &&
+        onChain.find(
+          (a) => a.contractAddress?.toUpperCase() === issuer.toUpperCase(),
+        )) ||
+      onChain.find((a) => a.symbol.toUpperCase() === (code ?? "").toUpperCase());
+    if (hit) return hit;
+  }
 
   if (isNative) {
     const nativeEntry = onChain.find((a) => !a.contractAddress);
@@ -956,34 +988,64 @@ const nearIntents: QuoteAdapter = {
     const deadline = new Date(Date.now() + 30 * 60_000).toISOString();
 
     const url = `${ONECLICK_BASE}/quote`;
-    const json = await postJson(
-      url,
-      {
-        // dry: true = price only, nothing committed and no deposit address.
-        dry: true,
-        swapType: "EXACT_INPUT",
-        slippageTolerance: Math.round(Number(req.slippage || "1") * 100),
-        originAsset: from.assetId,
-        depositType: "ORIGIN_CHAIN",
-        destinationAsset: to.assetId,
-        amount: toBaseUnits(req.amount, from.decimals),
-        refundTo: taker,
-        refundType: "ORIGIN_CHAIN",
-        recipient: taker,
-        recipientType: "DESTINATION_CHAIN",
-        deadline,
-      },
-      signal,
-    );
+    let json: Record<string, any>;
+    try {
+      json = await postJson(
+        url,
+        {
+          // dry: true = price only, nothing committed and no deposit address.
+          dry: true,
+          // Stellar deposits are identified by transaction memo, not a unique
+          // address, and 1Click rejects SIMPLE for a stellar origin outright
+          // ("Incorrect depositMode for originAsset from stellar chain").
+          depositMode: chainKey === "stellar" ? "MEMO" : "SIMPLE",
+          swapType: "EXACT_INPUT",
+          slippageTolerance: Math.round(Number(req.slippage || "1") * 100),
+          originAsset: from.assetId,
+          depositType: "ORIGIN_CHAIN",
+          destinationAsset: to.assetId,
+          amount: toBaseUnits(req.amount, from.decimals),
+          refundTo: taker,
+          refundType: "ORIGIN_CHAIN",
+          recipient: taker,
+          recipientType: "DESTINATION_CHAIN",
+          deadline,
+          },
+          signal,
+        );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Stellar requires the RECIPIENT to already hold a trustline for the
+      // destination asset — a chain-level rule, not a liquidity problem. A
+      // placeholder address can never satisfy it, so say what would.
+      if (/trustline/i.test(msg)) {
+        throw new NoRouteError(
+          "Recipient needs a Stellar trustline for this asset — set Account",
+        );
+      }
+      throw err;
+    }
 
     const q = json.quote;
     if (!q?.amountOut) {
-      throw new NoRouteError(json.message ?? "no quote returned");
+      const msg = String(json.message ?? "no quote returned");
+      // Stellar-specific: the recipient must already hold a trustline for the
+      // destination asset, so a placeholder address can't be quoted against.
+      // Real integrations pass the user's own account, which normally has one.
+      if (/trustline/i.test(msg)) {
+        throw new NoRouteError(
+          req.account
+            ? "Recipient has no trustline for the destination asset"
+            : "Stellar needs an account with a trustline — fill in Account",
+        );
+      }
+      throw new NoRouteError(msg.split("\n")[0]!);
     }
 
     return {
       source: "near-intents",
       label: "NEAR Intents",
+      kind: "intent",
       outAmount: String(q.amountOut),
       outDecimals: to.decimals,
       minOutAmount: q.minAmountOut ? String(q.minAmountOut) : undefined,
@@ -1301,6 +1363,7 @@ const uniswap: QuoteAdapter = {
     return {
       source: "uniswap",
       label: "Uniswap V3",
+      kind: "onchain",
       outAmount: best.toString(),
       outDecimals: req.outToken.decimals,
       venues: [{ name: `V3 ${(bestFee / 10_000).toFixed(2)}% pool` }],
@@ -1508,6 +1571,190 @@ const balancer: QuoteAdapter = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// WOWMAX — reimplemented from their SDK source, no dependency.
+//
+// Ported by hand from wowmax-exchange/wowmax-sdk (src/index.ts) so the project
+// keeps zero runtime dependencies. Only two things were needed from it:
+//   - base URL `https://api-gateway.wowmax.exchange`
+//   - `GET /chains/{chainId}/quote?from&to&amount[&account]`
+//
+// UNIT ASYMMETRY (documented in their own SDK): the request `amount` is
+// HUMAN-READABLE while `amountOut` comes back in BASE UNITS. Same trap as
+// OpenOcean, and it bites the same way.
+//
+// Stellar is addressed by WOWMAX's synthetic chain id 100000148, and its assets
+// are `native` or `CODE:ISSUER` rather than addresses — which is exactly why
+// this adapter maps chains through a table instead of assuming `chain.id`.
+// ---------------------------------------------------------------------------
+
+const WOWMAX_BASE = "https://api-gateway.wowmax.exchange";
+
+/** WOWMAX's synthetic chain id for Stellar (not an EVM chain id). */
+const WOWMAX_STELLAR_ID = 100000148;
+
+/** Our chain code -> the chain id WOWMAX expects in the path. */
+const WOWMAX_CHAINS: Record<string, number> = {
+  eth: 1,
+  bsc: 56,
+  polygon: 137,
+  arbitrum: 42161,
+  optimism: 10,
+  base: 8453,
+  avax: 43114,
+  fantom: 250,
+  sonic: 146,
+  linea: 59144,
+  scroll: 534352,
+  zksync: 324,
+  mantle: 5000,
+  bera: 80094,
+  stellar: WOWMAX_STELLAR_ID,
+};
+
+const wowmax: QuoteAdapter = {
+  id: "wowmax",
+  label: "WOWMAX",
+  blurb: "EVM + Stellar aggregator",
+
+  supports(req) {
+    if (!WOWMAX_CHAINS[req.chain.code]) return `${req.chain.name} not covered`;
+    return true;
+  },
+
+  async quote(req, signal) {
+    const chainId = WOWMAX_CHAINS[req.chain.code]!;
+    const url =
+      `${WOWMAX_BASE}/chains/${chainId}/quote?` +
+      qs({
+        from: req.inToken.address,
+        to: req.outToken.address,
+        // Human-readable, per their SDK — do NOT convert to base units.
+        amount: req.amount,
+        account: req.account || undefined,
+      });
+
+    const { json } = await getJson(url, signal);
+    if (!json.amountOut || json.amountOut === "0") {
+      throw new NoRouteError(json.message ?? json.error ?? "no route");
+    }
+
+    // Venue names live in routes[].swaps[].market.name.
+    const names: string[] = [];
+    for (const r of json.routes ?? []) {
+      for (const sw of r?.swaps ?? []) {
+        const n = sw?.market?.name ?? sw?.market?.id;
+        if (n) names.push(n);
+      }
+    }
+
+    return {
+      source: "wowmax",
+      label: "WOWMAX",
+      // amountOut IS base units, despite amount going in human-readable.
+      outAmount: String(json.amountOut),
+      outDecimals: json.to?.decimals ?? req.outToken.decimals,
+      estimatedGas:
+        json.gasUnitsConsumed != null && Number(json.gasUnitsConsumed) > 0
+          ? String(json.gasUnitsConsumed)
+          : undefined,
+      priceImpact:
+        json.priceImpact != null && Number(json.priceImpact) !== 0
+          ? String(json.priceImpact)
+          : undefined,
+      venues: dedupeVenues(names),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Soroswap — Stellar's main aggregator (routes Soroswap, Phoenix, Aquarius and
+// the classic SDEX).
+//
+// Requires a free API key from api.soroswap.finance/login; without one every
+// request is 403 Forbidden. Rather than show a permanent error row, the adapter
+// declares itself unsupported until `SOROSWAP_API_KEY` is set — then it works
+// with no other change.
+//
+// Note it addresses assets by SOROBAN CONTRACT ID (C…), not the `CODE:ISSUER`
+// form WOWMAX and the rest of Stellar use, so a small mapping table is needed.
+// ---------------------------------------------------------------------------
+
+/** Soroban contract ids for the Stellar assets we seed, keyed by CODE:ISSUER. */
+const SOROSWAP_CONTRACTS: Record<string, string> = {
+  native: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
+  "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN":
+    "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+  "AQUA:GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA":
+    "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK",
+};
+
+const soroswap: QuoteAdapter = {
+  id: "soroswap",
+  label: "Soroswap",
+  blurb: "Stellar aggregator (needs free key)",
+
+  supports(req) {
+    if (req.chain.code !== "stellar") return "Stellar only";
+    if (!SOROSWAP_API_KEY) {
+      return "Set SOROSWAP_API_KEY — free key from api.soroswap.finance/login";
+    }
+    const a = SOROSWAP_CONTRACTS[req.inToken.address];
+    const b = SOROSWAP_CONTRACTS[req.outToken.address];
+    if (!a || !b) return "No Soroban contract id known for this asset";
+    return true;
+  },
+
+  async quote(req, signal) {
+    const assetIn = SOROSWAP_CONTRACTS[req.inToken.address]!;
+    const assetOut = SOROSWAP_CONTRACTS[req.outToken.address]!;
+    const url = "https://api.soroswap.finance/quote?network=mainnet";
+
+    const json = await postJson(
+      url,
+      {
+        assetIn,
+        assetOut,
+        amount: toBaseUnits(req.amount, req.inToken.decimals),
+        tradeType: "EXACT_IN",
+        protocols: ["soroswap", "phoenix", "aqua", "sdex"],
+        slippageBps: Math.round(Number(req.slippage || "1") * 100),
+      },
+      signal,
+      { Authorization: `Bearer ${SOROSWAP_API_KEY}` },
+    );
+
+    if (!json.amountOut) throw new NoRouteError(json.message ?? "no route");
+
+    // Venue names live in routePlan[].swapInfo.protocol; `platform` names the
+    // one it settled on (e.g. "sdex" for the classic Stellar order book).
+    const protocols = (json.routePlan ?? []).map(
+      (r: any) => r?.swapInfo?.protocol,
+    );
+
+    return {
+      source: "soroswap",
+      label: "Soroswap",
+      outAmount: String(json.amountOut),
+      outDecimals: req.outToken.decimals,
+      minOutAmount: json.otherAmountThreshold
+        ? String(json.otherAmountThreshold)
+        : undefined,
+      priceImpact:
+        json.priceImpactPct != null && Number(json.priceImpactPct) !== 0
+          ? String(json.priceImpactPct)
+          : undefined,
+      venues: dedupeVenues(protocols.length ? protocols : [json.platform]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
 /** Registry order = display order before ranking. */
 export const ADAPTERS: QuoteAdapter[] = [
   openocean,
@@ -1527,6 +1774,8 @@ export const ADAPTERS: QuoteAdapter[] = [
   sushi,
   dodo,
   balancer,
+  wowmax,
+  soroswap,
 ];
 
 export function adapterById(id: string) {

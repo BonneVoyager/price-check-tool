@@ -48,6 +48,18 @@ export interface NormalQuote {
   ms: number;
   /** True when this source can also hand back signable calldata. */
   canExecute: boolean;
+  /**
+   * How the price was obtained:
+   *  - "api"     — an aggregator/router HTTP API (the default)
+   *  - "onchain" — read straight from a contract via RPC, no third-party API
+   *  - "rfq"     — a market maker quoting a firm price
+   *  - "intent"  — a solver auction; the price is a bid, not a route
+   *
+   * Surfaced as a tag in the UI, because it changes how much a number means:
+   * an on-chain read is ground truth for one pool, an intent bid may not
+   * materialise, and an RFQ is firm but only for that taker.
+   */
+  kind?: "api" | "onchain" | "rfq" | "intent";
 }
 
 /** Why a source produced no quote. Distinguishes "can't" from "broke". */

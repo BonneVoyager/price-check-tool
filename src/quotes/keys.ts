@@ -52,3 +52,18 @@ export const ENSO_API_KEY = envOr(
  *     bun run compare -- --chain eth --in ETH --out USDC --amount 1
  */
 export const ZEROX_API_KEY: string = envOr("ZEROX_API_KEY", "");
+
+/**
+ * Soroswap (Stellar) — free key, but registration is required: sign up at
+ * api.soroswap.finance/login and generate one. Without it every request is
+ * `403 Forbidden`, so the adapter declares itself unsupported rather than
+ * showing a permanent error row.
+ *
+ * Soroswap DOES send CORS headers, so unlike 0x this one can be used from the
+ * browser — meaning a key placed here is public. Prefer restricting it by
+ * origin in their dashboard, or set it only for CLI use via `.env`.
+ */
+export const SOROSWAP_API_KEY: string = envOr(
+  "SOROSWAP_API_KEY",
+  "sk_ae72b141d7477805d0d8e8e2173e006dd3f1b7cf66590f5c5ee7111232ad192a",
+);

@@ -38,6 +38,37 @@ export interface UiToken {
   isHot: boolean;
 }
 
+
+/**
+ * Fallback icon by SYMBOL, for tokens whose source list carries no icon URL.
+ *
+ * Seeded chains (Stellar, Starknet) have no OpenOcean token list at all, so
+ * every one of their tokens rendered as a letter circle. CoinCap's asset icons
+ * are a plain URL keyed by lowercase symbol — no API, no key, no rate limit to
+ * manage — and cover the majors we care about (verified in-browser: XLM, SUI,
+ * APT, NEAR, STRK, BTC, ETH, USDC, USDT, WBTC, XRP, PYUSD all load; AQUA, EURC,
+ * SHX, yXLM do not).
+ *
+ * A miss is harmless: the URL 404s, the <img> onerror fires, and the letter
+ * circle comes back — exactly the state these tokens were in before. So this is
+ * strictly additive, which is why it's fine to guess by symbol.
+ *
+ * CoinGecko was the alternative but its API needs a per-coin lookup and throttles
+ * hard without a key; this needs neither.
+ */
+const SYMBOL_ICON_BASE = "https://assets.coincap.io/assets/icons";
+
+/** Symbols we know CoinCap does NOT have, so we skip the doomed request. */
+const NO_SYMBOL_ICON = new Set(["AQUA", "EURC", "SHX", "YXLM", "USDX", "USDGLO", "USDP", "SUSD", "VELO"]);
+
+export function symbolIconUrl(symbol: string): string | undefined {
+  const s = (symbol ?? "").trim();
+  // Wrapped y-assets and long-tail Stellar anchors aren't on CoinCap.
+  if (!s || !/^[A-Za-z0-9]{2,8}$/.test(s)) return undefined;
+  if (NO_SYMBOL_ICON.has(s.toUpperCase())) return undefined;
+  return `${SYMBOL_ICON_BASE}/${s.toLowerCase()}@2x.png`;
+}
+
 /** In-memory cache — token lists change rarely and are up to ~660 entries. */
 const cache = new Map<string, { at: number; tokens: UiToken[] }>();
 const TTL_MS = 10 * 60 * 1000;
@@ -49,7 +80,7 @@ function toUi(t: OoToken & { hot?: unknown; usd?: string }, native: boolean): Ui
     symbol: t.symbol ?? "?",
     name: t.name ?? "",
     decimals: Number(t.decimals ?? 18),
-    icon: t.icon,
+    icon: t.icon || symbolIconUrl(t.symbol ?? ""),
     usd: Number.isFinite(usd) ? usd : undefined,
     isNative: native,
     isHot: t.hot !== null && t.hot !== undefined && t.hot !== "",
@@ -75,6 +106,18 @@ function sortTokens(a: UiToken, b: UiToken): number {
  * show. Only needed where a non-OpenOcean aggregator brought the chain in.
  */
 const SEED_TOKENS: Record<string, UiToken[]> = {
+  stellar: [
+    { address: "native", symbol: "XLM", name: "Stellar Lumens", decimals: 7, isNative: true, isHot: true },
+    { address: "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN", symbol: "USDC", name: "USDC", decimals: 7, isNative: false, isHot: true },
+    { address: "AQUA:GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA", symbol: "AQUA", name: "AQUA", decimals: 7, isNative: false, isHot: true },
+    { address: "EURC:GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2", symbol: "EURC", name: "EURC", decimals: 7, isNative: false, isHot: true },
+    { address: "yXLM:GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55", symbol: "yXLM", name: "yXLM", decimals: 7, isNative: false, isHot: true },
+    { address: "XRP:GBXRPL45NPHCVMFFAYZVUVFFVKSIZ362ZXFP7I2ETNQ3QKZMFLPRDTD5", symbol: "XRP", name: "XRP", decimals: 7, isNative: false, isHot: true },
+    { address: "SHX:GDSTRSHXHGJ7ZIVRBXEYE5Q74XUVCUSEKEBR7UCHEUUEK72N7I7KJ6JH", symbol: "SHX", name: "SHX", decimals: 7, isNative: false, isHot: true },
+    { address: "BTC:GDPJALI4AZKUU2W426U5WKMAT6CN3AJRPIIRYR2YM54TL2GDWO5O2MZM", symbol: "BTC", name: "BTC", decimals: 7, isNative: false, isHot: true },
+    { address: "ETH:GBFXOHVAS43OIWNIO7XLRJAHT3BICFEIKOJLZVXNT572MISM4CMGSOCC", symbol: "ETH", name: "ETH", decimals: 7, isNative: false, isHot: true },
+    { address: "PYUSD:GDQE7IXJ4HUHV6RQHIUPRJSEZE4DRS5WY577O2FY6YQ5LVWZ7JZTU2V5", symbol: "PYUSD", name: "PYUSD", decimals: 7, isNative: false, isHot: true },
+  ],
   starknet: [
     { address: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7", symbol: "ETH", name: "Ether", decimals: 18, isNative: true, isHot: true },
     { address: "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8", symbol: "USDC", name: "USD Coin", decimals: 6, isNative: false, isHot: true },
@@ -93,8 +136,13 @@ export async function loadTokens(chainCode: string): Promise<UiToken[]> {
 
   const seeded = SEED_TOKENS[chainCode];
   if (seeded) {
-    cache.set(chainCode, { at: Date.now(), tokens: seeded });
-    return seeded;
+    // Seeded chains have no upstream icons at all; fill them in by symbol.
+    const withIcons = seeded.map((t) => ({
+      ...t,
+      icon: t.icon || symbolIconUrl(t.symbol),
+    }));
+    cache.set(chainCode, { at: Date.now(), tokens: withIcons });
+    return withIcons;
   }
 
   const raw = await getTokenList(chainCode);
@@ -139,6 +187,7 @@ export function normalise(raw: OoToken[], chain: ChainInfo): UiToken[] {
       symbol: chain.nativeSymbol,
       name: `${chain.name} native coin`,
       decimals: 18,
+      icon: symbolIconUrl(chain.nativeSymbol),
       isNative: true,
       isHot: true,
     });

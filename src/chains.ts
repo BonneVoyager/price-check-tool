@@ -92,13 +92,30 @@ export const CHAINS: ChainInfo[] = [
    * supports() rather than sending a malformed request.
    */
   { code: "starknet", name: "Starknet", id: null, nativeSymbol: "ETH", evm: false },
+  /**
+   * Stellar. Also not an OpenOcean chain — added for WOWMAX (and Soroswap once
+   * a key is configured). Its assets are not addresses at all: the native coin
+   * is the literal string `native`, and everything else is `CODE:ISSUER`, e.g.
+   * `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`. All
+   * balances use 7 decimals (stroops).
+   *
+   * WOWMAX addresses it by the synthetic chain id 100000148, which is theirs
+   * alone — Stellar has no EVM chain id, so `id` stays null here.
+   */
+  { code: "stellar", name: "Stellar", id: null, nativeSymbol: "XLM", evm: false },
 ];
 
 export function findChain(code: string): ChainInfo | undefined {
   return CHAINS.find((c) => c.code === code);
 }
 
+/** Stellar's native asset is the literal string "native", not an address. */
+export const STELLAR_NATIVE = "native";
+
 /** The address to use for a chain's native coin. */
 export function nativeAddressFor(chain: ChainInfo): string {
-  return chain.evm ? NATIVE : chain.code === "solana" ? SOL_NATIVE : NATIVE;
+  if (chain.evm) return NATIVE;
+  if (chain.code === "solana") return SOL_NATIVE;
+  if (chain.code === "stellar") return STELLAR_NATIVE;
+  return NATIVE;
 }

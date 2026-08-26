@@ -91,4 +91,21 @@ export const CHAIN_MARKS: Record<string, string> = {
   eth: svg(
     `${circle("#627EEA")}<path d="M16 5v8.2l6.9 3.1L16 5z" fill="#fff" fill-opacity=".6"/><path d="M16 5L9.1 16.3l6.9-3.1V5z" fill="#fff"/><path d="M16 21.5V27l6.9-9.6-6.9 4.1z" fill="#fff" fill-opacity=".6"/><path d="M16 27v-5.5l-6.9-4.1L16 27z" fill="#fff"/><path d="M16 20.2l6.9-4.1-6.9-3.1v7.2z" fill="#fff" fill-opacity=".2"/><path d="M9.1 16.1l6.9 4.1V13l-6.9 3.1z" fill="#fff" fill-opacity=".6"/>`,
   ),
+
+  // ---------------------------------------------------------------------------
+  // The two chains below need a mark for a different reason than the L2s above.
+  // They aren't ambiguous — they're absent: OpenOcean serves neither, so the
+  // token-list tier has nothing at all to derive a logo from and they fell
+  // through to letter initials.
+  // ---------------------------------------------------------------------------
+
+  // Starknet — deep navy with the angular StarkNet chevron/star motif.
+  starknet: svg(
+    `${circle("#0C0C4F")}<path d="M16 6.5l2.6 5.4 5.9.9-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9-4.3-4.1 5.9-.9L16 6.5z" fill="#FF8A00"/><circle cx="16" cy="15.4" r="2.1" fill="#0C0C4F"/>`,
+  ),
+
+  // Stellar — black with the white rocket/orbit glyph.
+  stellar: svg(
+    `${circle("#0F0F0F")}<path d="M24.5 9.9l-3 1.5a7.4 7.4 0 0 0-11 7.7l-2.9 1.5-.9-1.8 2.6-1.3a9.4 9.4 0 0 1 13.9-9.4l1.3.6v1.2z" fill="#fff"/><path d="M7.5 22.1l3-1.5a7.4 7.4 0 0 0 11-7.7l2.9-1.5.9 1.8-2.6 1.3a9.4 9.4 0 0 1-13.9 9.4l-1.3-.6v-1.2z" fill="#fff"/>`,
+  ),
 };

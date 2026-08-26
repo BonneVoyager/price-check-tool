@@ -398,6 +398,65 @@ summary:hover { color: var(--text); }
   padding-top: 10px; border-top: 1px solid var(--line-soft);
 }
 .pending { display: inline-flex; align-items: center; gap: 7px; color: var(--text-faint); font-size: 12px; }
+
+/* Source-kind tags: how the price was obtained, not just who gave it. */
+.badge-sm.onchain { background: rgba(61,220,132,.16); color: var(--green); }
+.badge-sm.rfq     { background: rgba(255,180,84,.16); color: var(--amber); }
+.badge-sm.intent  { background: color-mix(in srgb, #7d5cff 20%, transparent); color: #9b85ff; }
+
+/* Compare is the headline action, so it gets the accent and its own emphasis. */
+/* Hero button. Deliberately NO large blurred box-shadow: a soft wide shadow on
+   a saturated gradient reads as a glowing halo rather than elevation, which is
+   what the first attempt looked like. Depth comes from a tight shadow plus a
+   1px top inset highlight; hover darkens and lifts by 1px instead of blooming. */
+.btn.hero {
+  background: linear-gradient(135deg, var(--accent), #6d5cf0);
+  border: 1px solid transparent; color: #fff; font-weight: 650;
+  height: 40px; padding: 0 18px;
+  box-shadow:
+    0 1px 2px rgba(10, 14, 22, .35),
+    inset 0 1px 0 rgba(255, 255, 255, .16);
+  transition: transform .12s, filter .12s, box-shadow .12s;
+}
+.btn.hero:hover:not(:disabled) {
+  filter: saturate(1.06) brightness(.96);
+  transform: translateY(-1px);
+  box-shadow:
+    0 3px 8px rgba(10, 14, 22, .4),
+    inset 0 1px 0 rgba(255, 255, 255, .2);
+}
+.btn.hero:active:not(:disabled) {
+  transform: translateY(0);
+  filter: brightness(.92);
+  box-shadow: inset 0 1px 3px rgba(10, 14, 22, .3);
+}
+.btn.hero svg { opacity: .95; }
+.actions .spacer { flex: 1; }
+
+/* Verdict banner — the headline answer, above the table. */
+.verdict {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--green) 12%, transparent), transparent 70%);
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  border-radius: var(--r-sm);
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.verdict.pending-v {
+  background: linear-gradient(135deg, var(--accent-glow), transparent 70%);
+  border-color: var(--accent-dim);
+}
+.v-main { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.v-label {
+  font: 700 9.5px/1 var(--sans); text-transform: uppercase; letter-spacing: .07em;
+  color: var(--green); background: color-mix(in srgb, var(--green) 16%, transparent);
+  padding: 4px 6px; border-radius: 4px;
+}
+.pending-v .v-label { color: var(--accent); background: var(--accent-glow); }
+.v-src { font: 650 15px/1.2 var(--sans); }
+.v-out { font: 600 19px/1.2 var(--mono); margin-left: auto; white-space: nowrap; }
+.v-sym { font-size: 13px; color: var(--text-dim); font-weight: 500; }
+.v-meta { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+.v-dot { color: var(--text-faint); margin: 0 5px; }
+@media (max-width: 560px) { .v-out { margin-left: 0; } }
 </style>
 </head>
 <body>
@@ -526,10 +585,17 @@ summary:hover { color: var(--text); }
     </div>
 
     <div class="actions">
-      <button class="btn primary" id="btnQuote">Get <code>/quote</code></button>
+      <button class="btn" id="btnQuote">Get <code>/quote</code></button>
       <button class="btn" id="btnSwap">Get <code>/swap</code></button>
       <button class="btn" id="btnGas">gasPrice</button>
-      <button class="btn" id="btnCompare" style="margin-left:auto">Compare all sources</button>
+      <span class="spacer"></span>
+      <button class="btn hero" id="btnCompare">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 20V10M10 20V4M16 20v-7M22 20V8"/>
+        </svg>
+        Compare all sources
+      </button>
     </div>
 
     <div class="note" id="note">
@@ -574,11 +640,20 @@ function fromBase(v, d) {
 const short = (a) => (a && a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a || "");
 const initials = (s) => (s || "?").slice(0, 3).toUpperCase();
 
-/** Icon markup: real image when the API gave one, else letter fallback. */
+/**
+ * Icon markup: real image when we have one, else a letter fallback.
+ *
+ * NOT lazy-loaded, deliberately. These render inside a 292px scroll container
+ * holding 40+ rows, and `loading="lazy"` left every row below the fold showing
+ * initials — scrolling a nested scroller doesn't reliably trigger the load, so
+ * chains near the end of the list (Gravity, TAC, Sui, Aptos, NEAR) looked like
+ * they had no icon at all. At 21px these are a couple of KB each and most are
+ * inline data URIs, so eager loading costs nothing worth optimising.
+ */
 function iconHtml(item, cls) {
   const label = esc(initials(item?.symbol || item?.code));
   if (item?.icon) {
-    return `<img class="${cls}" src="${esc(item.icon)}" alt="" loading="lazy"
+    return `<img class="${cls}" src="${esc(item.icon)}" alt="" decoding="async"
       onerror="this.outerHTML='<span class=\\'${cls}\\'>${label}</span>'" />`;
   }
   return `<span class="${cls}">${label}</span>`;
@@ -1099,6 +1174,28 @@ async function call(endpoint, withAccount) {
    one. Genuine failures get a red badge instead.
    =========================================================================== */
 
+/**
+ * Tag for HOW the price was obtained — orthogonal to who provided it.
+ *
+ * "onchain" is the one worth spotting: it's a direct contract read via RPC with
+ * no third-party API in the path, so it's ground truth for that pool rather
+ * than someone's routing opinion. "intent" prices are solver bids that may not
+ * materialise; "rfq" is firm but only for that taker. Plain aggregator APIs get
+ * no tag, since that's the default everything else is compared against.
+ */
+function kindTag(kind) {
+  if (kind === "onchain") {
+    return '<span class="badge-sm onchain" title="Read directly from the contract via RPC — no third-party API">onchain</span>';
+  }
+  if (kind === "rfq") {
+    return '<span class="badge-sm rfq" title="Firm price quoted by a market maker for this taker">RFQ</span>';
+  }
+  if (kind === "intent") {
+    return '<span class="badge-sm intent" title="Solver auction — the price is a bid, not a computed route">intent</span>';
+  }
+  return "";
+}
+
 function cmpRowSuccess(r, isWin) {
   const o = r.outcome;
   const venues = o.venues.map((v) => v.name).slice(0, 3).join(", ");
@@ -1107,7 +1204,7 @@ function cmpRowSuccess(r, isWin) {
     <tr class="${isWin ? "win" : ""}">
       <td><div class="src">
         <span class="rk ${isWin ? "g1" : ""}">${r.rank}</span>
-        <span><span class="nm">${esc(o.label)}</span>
+        <span><span class="nm">${esc(o.label)}</span>${kindTag(o.kind)}
         ${o.canExecute ? "" : '<span class="badge-sm na" title="Quote only in this app">quote only</span>'}
         <div class="bl">${esc(venues || "—")}${more}</div></span>
       </div></td>
@@ -1167,6 +1264,7 @@ async function compareAll() {
         <h2>Best price across sources
           <span class="chip ${done ? "direct" : "split"}">${done ? `${ranked.length} quoted` : `${settled.length}/${total}`}</span>
         </h2>
+        ${cmpVerdict(ranked, done)}
         <table class="cmp">
           <thead><tr>
             <th>Source</th>
@@ -1180,7 +1278,7 @@ async function compareAll() {
             ${!done ? `<tr><td colspan="4"><span class="pending"><span class="spin"></span>waiting for ${total - settled.length} more…</span></td></tr>` : ""}
           </tbody>
         </table>
-        ${done ? cmpFooter(ranked) : ""}
+        ${done ? cmpCaveats(ranked) : ""}
       </div>`;
   };
 
@@ -1195,17 +1293,50 @@ async function compareAll() {
   paint(true);
 }
 
-function cmpFooter(ranked) {
-  if (ranked.length < 2) {
-    return `<div class="cmp-note">Only one source could quote this pair — nothing to compare against.</div>`;
-  }
-  const best = ranked[0], worst = ranked[ranked.length - 1];
-  const spread = ((best.human - worst.human) / worst.human) * 100;
+/**
+ * The headline, directly under the section title: who won and by how much.
+ *
+ * This sat under the table as small grey text, which buried the one number the
+ * whole comparison exists to produce. It's now the first thing you read, with
+ * the caveats moved to a footnote where they belong.
+ */
+function cmpVerdict(ranked, done) {
+  if (!ranked.length) return "";
+
+  const best = ranked[0];
+  const out = best.human.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  const sym = esc(SEL.out?.symbol ?? "");
+
+  // Spread vs the WORST quote answers "how much does shopping around matter?";
+  // the gap to 2nd answers "how clear is this win?" — both are useful.
+  const worst = ranked[ranked.length - 1];
+  const spread = worst.human > 0 ? ((best.human - worst.human) / worst.human) * 100 : 0;
+  const second = ranked[1];
+  const lead = second ? Math.abs(second.deltaPct) : 0;
+
+  return `
+    <div class="verdict${done ? "" : " pending-v"}">
+      <div class="v-main">
+        <span class="v-label">${done ? "Best" : "Leading"}</span>
+        <strong class="v-src">${esc(best.outcome.label)}</strong>
+        <span class="v-out">${out} <span class="v-sym">${sym}</span></span>
+      </div>
+      ${ranked.length > 1
+        ? `<div class="v-meta">
+             +${lead.toFixed(3)}% over ${esc(second.outcome.label)}
+             <span class="v-dot">·</span>
+             ${Math.abs(spread).toFixed(3)}% spread across ${ranked.length} quotes
+           </div>`
+        : `<div class="v-meta">Only one source quoted this pair — nothing to compare against.</div>`}
+    </div>`;
+}
+
+/** Small print under the table: what the ranking does NOT account for. */
+function cmpCaveats(ranked) {
+  if (!ranked.length) return "";
   return `<div class="cmp-note">
-    <strong>${esc(best.outcome.label)}</strong> wins by
-    <strong>${Math.abs(spread).toFixed(3)}%</strong> over the lowest quote here.
-    Quotes are indicative and move between blocks — re-run to see it shift.
-    Gas and each source's own fees are not deducted.
+    Quotes are indicative and move between blocks — re-run to see them shift.
+    Gas and each source's own fees are not deducted, so this is gross output.
   </div>`;
 }
 

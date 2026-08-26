@@ -158,16 +158,50 @@ an address that isn't a contract at all returns the same generic
 `code: 500 "Quote api error"` as a real token with no liquidity, so check the
 contract exists before assuming the token is unsupported.
 
+**Token icons resolve in three tiers**, in [src/tokens.ts](src/tokens.ts):
+
+1. the `icon` URL from OpenOcean's `tokenList`, when there is one;
+2. otherwise **CoinCap by symbol** — `assets.coincap.io/assets/icons/{sym}@2x.png`,
+   a plain keyless URL with no API call and nothing to rate-limit;
+3. otherwise the letter circle.
+
+Tier 2 exists because seeded chains (Stellar, Starknet) have no OpenOcean token
+list at all, so *every* token showed initials. Verified in-browser: XLM, USDC,
+XRP, BTC, ETH, PYUSD, SUI, APT, NEAR, STRK, USDT, WBTC all load; AQUA, EURC,
+SHX and yXLM don't exist there and are listed in `NO_SYMBOL_ICON` so we skip a
+request we know will 404.
+
+Guessing by symbol is safe *because* the fallback is graceful — a miss 404s, the
+`onerror` handler swaps in the letter circle, and you're back to the previous
+behaviour. CoinGecko was the alternative, but it needs a per-coin API lookup and
+throttles hard without a key; this needs neither.
+
+**Don't lazy-load the picker icons.** They were `loading="lazy"`, which looked
+harmless but broke: both pickers are ~292px scroll containers holding 44 chains
+or 80+ tokens, and rows below the fold never loaded — so chains near the end of
+the list (Gravity, TAC, Sui, Aptos, NEAR) permanently showed letter initials as
+if they had no icon. Scrolling a *nested* scroller doesn't reliably trigger the
+load either. At 21px, and with most marks being inline data URIs, eager loading
+costs nothing worth optimising. Verified: 44/44 chains and 80/80 tokens load
+with no scrolling.
+
 **Chain icons.** The API has no chain-logo field, and OpenOcean's own app uses
 hashed build assets (`/img/sonic.2305224a.svg`) that break on their next deploy.
 So logos resolve in two tiers, served from `/api/chainIcons`:
 
-1. [src/chain-marks.ts](src/chain-marks.ts) holds inline-SVG brand marks for the
-   12 chains the token list *cannot* distinguish. Every ETH-native L2 resolves to
+1. [src/chain-marks.ts](src/chain-marks.ts) holds inline-SVG brand marks for 14
+   chains, added for two different reasons. Twelve are chains the token list
+   *cannot distinguish*. Every ETH-native L2 resolves to
    its own local WETH token — distinct URLs, but all the generic ETH diamond — so
    Base, Arbitrum, Optimism, Linea, Scroll, zkSync, Blast, Mode, Manta, Aurora
    and Polygon zkEVM would otherwise render as eleven identical rows. Data URIs,
    so there's no CDN to rot and nothing to rate-limit.
+
+   **Starknet and Stellar** are there for the opposite reason: not ambiguous but
+   *absent*. OpenOcean serves neither chain, so the token-list tier below has
+   nothing at all to derive a logo from and they fell through to letter
+   initials. Any future chain added for a non-OpenOcean aggregator will need a
+   mark here for the same reason.
 2. The other 30 come from the token list: a chain's native coin and its wrapped
    twin share a logo (the Polygon mark *is* the wPOL icon). Native first, then
    wrapped — 26 of 42 chains have no icon on the bare native entry, so that
@@ -241,6 +275,8 @@ only learn whether a route is good by asking someone else.
 | Sushi | 13 EVM chains | own router API |
 | DODO | 12 EVM chains | own router; `useSource` often names another aggregator |
 | Balancer | 8 EVM chains | GraphQL SOR, weighted pools |
+| WOWMAX | 14 EVM chains **+ Stellar** | ported from their SDK, no dependency |
+| Soroswap | Stellar | routes Soroswap/Phoenix/Aquarius/SDEX; API key |
 | Jupiter | Solana | executes |
 | AVNU | Starknet | hex amounts |
 | Fibrous | Starknet | also Scroll/Base |
@@ -295,6 +331,64 @@ the registry purely for AVNU and Fibrous — and it reports
 "Starknet not on OpenOcean v4" rather than failing. Chains OpenOcean's
 `/tokenList` can't serve get a small seed list in `SEED_TOKENS` so the picker
 still works.
+
+### Stellar
+
+Added as a chain (`stellar`), and it is unlike every other entry: assets are not
+addresses at all. The native coin is the literal string **`native`**, everything
+else is **`CODE:ISSUER`** (e.g.
+`USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`), and all
+balances use **7 decimals** (stroops). `nativeAddressFor()` and `SEED_TOKENS`
+handle both; OpenOcean doesn't serve Stellar, so it declares itself unsupported.
+
+Two Stellar aggregators exist. Only one is usable without registration:
+
+- **WOWMAX** — works keyless and CORS-open. Verified: 100 XLM → 17.93 USDC.
+- **Soroswap** — Stellar's main aggregator, routing Soroswap, Phoenix, Aquarius
+  and the classic SDEX order book. Needs a free key from
+  `api.soroswap.finance/login`; one is committed in
+  [src/quotes/keys.ts](src/quotes/keys.ts) and **it is public** (see the API-key
+  section — Soroswap is CORS-open, so the key ships in `app.js`). Override with
+  `SOROSWAP_API_KEY` in `.env`, or restrict it by origin in their dashboard.
+
+  Two things to know about its wire format: it answers **HTTP 201**, not 200,
+  and it addresses assets by **Soroban contract id** (`C…`) rather than the
+  `CODE:ISSUER` form the rest of Stellar uses — so `SOROSWAP_CONTRACTS` maps the
+  two. Only XLM/USDC/AQUA are mapped; other assets report no known contract id
+  rather than guessing.
+
+Measured: 100 XLM → 17.993 USDC from both, agreeing to 6 decimals.
+
+### Source-kind tags
+
+The comparison table tags **how** a price was obtained, which is orthogonal to
+who provided it and changes how much the number means:
+
+| Tag | Meaning |
+|---|---|
+| `onchain` | read straight from the contract via RPC — no third-party API in the path. Ground truth for that pool. Currently only **Uniswap V3**. |
+| `intent` | a solver auction; the price is a *bid* that may not materialise (**CoW Swap**, **NEAR Intents**). |
+| `RFQ` | a market maker's firm price, but only for that taker (**Bebop**). |
+| *(no tag)* | a plain aggregator/router HTTP API — the default everything else is compared against. |
+
+Set per adapter via `kind` on the returned quote, so a new source declares its
+own nature rather than the UI hardcoding a list.
+
+### WOWMAX without the dependency
+
+Ported by hand from
+[wowmax-sdk/src/index.ts](https://github.com/wowmax-exchange/wowmax-sdk/blob/main/src/index.ts)
+to keep the project dependency-free. Only two things were needed: the base URL
+`https://api-gateway.wowmax.exchange` and
+`GET /chains/{chainId}/quote?from&to&amount`.
+
+Two details worth keeping:
+
+- **Stellar is chain id `100000148`** — a synthetic id WOWMAX invented, since
+  Stellar has no EVM chain id. That's why the adapter maps chains through a
+  table rather than using `chain.id`.
+- **Same unit asymmetry as OpenOcean**, documented in their own SDK: the request
+  `amount` is human-readable, but `amountOut` comes back in base units.
 
 ### Unit gotchas in the newer adapters
 
@@ -396,6 +490,23 @@ that chain's native coin**. Two exceptions found by testing:
 - **`recipient` is validated against the destination chain's address format**,
   so an EVM address on Solana fails with "recipient is not valid". Per-chain
   placeholder addresses are used; `dry: true` means nothing is ever sent to them.
+
+**Stellar** needs two further rules, both found by testing:
+
+- `depositMode` must be **`MEMO`**, not `SIMPLE` — Stellar deposits are keyed by
+  transaction memo rather than a unique address, and 1Click rejects SIMPLE for a
+  stellar origin outright (`Incorrect depositMode for originAsset from stellar
+  chain`). Every other chain still uses `SIMPLE`.
+- The **recipient must already hold a trustline** for the destination asset.
+  That's a Stellar protocol rule, not a liquidity condition, so no placeholder
+  can satisfy it for a non-native destination — the adapter reports "Recipient
+  needs a Stellar trustline for this asset — set Account" rather than a phantom
+  routing failure.
+
+Its Stellar asset ids also don't follow the `contractAddress` convention above:
+1Click stores only the bare **issuer** (and nothing for XLM), while our
+addresses are `native` / `CODE:ISSUER`, so the resolver matches on the issuer
+half. 1Click covers exactly XLM and USDC there.
 
 Coverage is the widest of any source here — 35 chains including Bitcoin, XRP,
 Cardano, Dogecoin, TON, Tron, Stellar, Aptos, Sui and Starknet. On NEAR it is
