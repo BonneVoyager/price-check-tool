@@ -1,7 +1,16 @@
 {
   "compilerOptions": {
-    // Environment setup & latest features
-    "lib": ["ESNext"],
+    // Environment setup & latest features.
+    //
+    // DOM is required, not optional: most of this project is browser code
+    // (src/browser.ts, and the `typeof window` guards in openocean.ts and
+    // quotes/adapters.ts that pick browser vs CLI behaviour).
+    //
+    // It was previously just ["ESNext"], which typechecked on a dev machine
+    // because some globally-resolved lib supplied `window` ambiently, and then
+    // failed in CI with `TS2304: Cannot find name 'window'` on a clean install.
+    // Declaring it here is what makes the result the same everywhere.
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
