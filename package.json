@@ -12,7 +12,8 @@
     "chains": "bun src/cli.ts chains",
     "gas": "bun src/cli.ts gas",
     "typecheck": "tsc --noEmit",
-    "compare": "bun src/cli.ts compare"
+    "compare": "bun src/cli.ts compare",
+    "build:single": "bun build-single.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

@@ -585,6 +585,44 @@ calldata that this tool doesn't make.
 
 ---
 
+## Single file / GitHub Pages
+
+```bash
+bun run build:single      # → dist/index.html
+```
+
+One 94 KB file with the JS bundle inlined. No second request, no server, so it
+works on GitHub Pages, any static host, or opened straight off disk.
+
+A [workflow](.github/workflows/pages.yml) builds and publishes it on every push
+to `main`. To turn it on: **Settings → Pages → Source: GitHub Actions**. Nothing
+else to configure — no env vars, no base-path rewriting (every asset is inlined
+or absolute).
+
+Two things the inlining has to get right, or the page loads and silently does
+nothing:
+
+- **The `import` must go.** `public/index.html` does
+  `import { OO } from "./app.js"` inside `<script type="module">`; there's no
+  module to import from once the code is in the same file. The bundle already
+  assigns `window.OO`, so the single-file build rewrites that line to read the
+  global instead.
+- **The bundle's trailing `export{…}` must go.** An `export` outside a module is
+  a syntax error, and an inline classic `<script>` is not a module.
+
+[build-single.ts](build-single.ts) does both and hard-fails if either pattern
+stops matching, rather than emitting a page that looks fine and is dead.
+
+This is also why the single-file build works from `file://` while the normal one
+doesn't: `<script type="module">` obeys CORS, so a module import from a
+`file://` page is blocked. An inline script isn't.
+
+Verified over a plain static server: one request, `/app.js` 404s (nothing
+external is needed), 44/44 chain icons load, and a full 19-source comparison
+runs.
+
+---
+
 ## Deploying to Vercel
 
 **This is a static site — there is no server to run.** The page calls OpenOcean
