@@ -11,7 +11,8 @@
     "tokens": "bun src/cli.ts tokens",
     "chains": "bun src/cli.ts chains",
     "gas": "bun src/cli.ts gas",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "compare": "bun src/cli.ts compare"
   },
   "devDependencies": {
     "@types/bun": "latest"

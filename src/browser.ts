@@ -25,6 +25,8 @@ import {
 } from "./openocean.ts";
 import { chainIcon, loadTokens, resolveToken, type UiToken } from "./tokens.ts";
 import { dexesUsed, flattenPath, isSplitRoute, routingAdvantage } from "./routes.ts";
+import { ADAPTERS } from "./quotes/adapters.ts";
+import { compareQuotes, failures, rank } from "./quotes/run.ts";
 import type { OoQuote, OoSwap } from "./types.ts";
 
 /** Same `_analysis` shape the server used to attach, computed client-side. */
@@ -70,6 +72,11 @@ export const OO = {
   upstreamUrl,
   iconFor,
   OpenOceanError,
+  // multi-aggregator comparison
+  ADAPTERS,
+  compareQuotes,
+  rank,
+  failures,
 };
 
 // Exposed for the inline script in index.html. Typed as `unknown` here because

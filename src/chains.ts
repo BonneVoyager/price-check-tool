@@ -84,6 +84,14 @@ export const CHAINS: ChainInfo[] = [
   { code: "sui", name: "Sui", id: null, nativeSymbol: "SUI", evm: false },
   { code: "aptos", name: "Aptos", id: null, nativeSymbol: "APT", evm: false },
   { code: "near", name: "NEAR", id: null, nativeSymbol: "NEAR", evm: false },
+  /**
+   * Starknet. NOT served by OpenOcean's /v4 endpoints — it's here so the
+   * Starknet-native aggregators (AVNU, Fibrous) have a chain to attach to.
+   * Its addresses are felt252 hex, not 20-byte EVM addresses, which is why
+   * `evm: false` matters: adapters keyed on EVM assumptions opt out via
+   * supports() rather than sending a malformed request.
+   */
+  { code: "starknet", name: "Starknet", id: null, nativeSymbol: "ETH", evm: false },
 ];
 
 export function findChain(code: string): ChainInfo | undefined {

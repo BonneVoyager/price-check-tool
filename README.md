@@ -205,6 +205,7 @@ src/chains.ts     42 chain codes (probe-verified)
 src/chain-marks.ts inline SVG brand marks for look-alike chains
 src/tokens.ts     live token lists, normalisation, icons, symbol resolution
 src/browser.ts    browser entrypoint, bundled to public/app.js
+src/quotes/       multi-aggregator comparison (types, adapters, runner)
 static.ts         local dev server (static files + dev-only proxy)
 src/cli.ts        terminal client
 public/index.html frontend (single file, no build)
@@ -215,6 +216,232 @@ browser's own `Referer` satisfies the WAF. The UI still shows the exact upstream
 URL for every call, rebuilt client-side. Local dev proxies `/quote` and `/swap`
 only, because a `localhost` Referer is rejected; see
 [Deploying to Vercel](#deploying-to-vercel).
+
+---
+
+## Comparing aggregators
+
+**Compare all sources** fans one request out to every adapter and ranks the
+answers. It exists because a single aggregator's quote is unfalsifiable — you
+only learn whether a route is good by asking someone else.
+
+| Source | Coverage | Notes |
+|---|---|---|
+| OpenOcean | 42 chains, EVM + Solana/Sui/Aptos/NEAR | executes |
+| KyberSwap | 19 EVM chains | quote only here |
+| ParaSwap | 11 EVM chains | quote only here |
+| CoW Swap | 7 EVM chains | batch auction; output is **net of fee** |
+| Bebop | 9 EVM chains | RFQ from market makers |
+| Relay | EVM (cross-chain router) | used same-chain |
+| LI.FI | EVM (meta-aggregator) | also bridges |
+| NEAR Intents | 35 chains incl. BTC/XRP/ADA/DOGE/TON | 1Click API |
+| Enso | 14 EVM chains | **API key** (public in bundle) |
+| 0x | 13 EVM chains | **CLI only** — no CORS |
+| Uniswap V3 | 5 EVM chains | **direct pool read**, not an aggregator |
+| Sushi | 13 EVM chains | own router API |
+| DODO | 12 EVM chains | own router; `useSource` often names another aggregator |
+| Balancer | 8 EVM chains | GraphQL SOR, weighted pools |
+| Jupiter | Solana | executes |
+| AVNU | Starknet | hex amounts |
+| Fibrous | Starknet | also Scroll/Base |
+
+Eleven of the thirteen are **keyless and CORS-open from a browser**, verified
+from the deployed origin. Enso needs a key but does send CORS headers, so it
+works in the browser. 0x needs a key *and* sends no CORS headers, so it runs in
+the CLI only. Excluded after testing, with the reason:
+
+| Rejected | Why |
+|---|---|
+| Odos | CORS-blocked from the browser |
+| Magpie, Rango | `403` Cloudflare challenge |
+| Socket/Bungee | `401` — API key required |
+| Squid | `x-integrator-id` header required |
+| Firebird, Swing | host unreachable |
+| Curve | pool data only, no quote endpoint |
+| Velora | ParaSwap rebranded — same API, already covered |
+| 1inch, OKX DEX | `401` — API key required, none supplied |
+| Odos | CORS-blocked (`Failed to fetch`); its edge also 530s server-side |
+| Titan, 7K, Omniston | host unreachable / timed out |
+| DFlow | `403` |
+| Ekubo | no public quote path found (404 on every candidate) |
+| Cetus, DeDust, STON.fi | reachable, but pool/asset endpoints — not quote APIs |
+
+Enso is the instructive one: server-side probing said yes, the browser said no.
+Anything added here has to be checked from the *deployed origin*, not a terminal.
+
+### Not EVM-locked
+
+Chains are identified by our own `ChainInfo`, never by assuming a `0x` address or
+a numeric chain id. Each adapter maps that to whatever its API wants — a path
+slug (Kyber), a numeric `network` (ParaSwap), a mint address (Jupiter), a
+felt252 hex address with **hex-encoded amounts** (AVNU).
+
+Three ecosystems now compare, and adding one needed no change to the runner or
+the UI:
+
+```
+1 WETH → USDC (Ethereum)     1 SOL → USDC (Solana)      1 ETH → USDC (Starknet)
+★ KyberSwap 2449.400  best   ★ Jupiter    95.795  best   ★ Fibrous  2465.756  best
+  ParaSwap  2449.400 -0.000%   OpenOcean  95.733 -0.065%   AVNU     2445.985 -0.802%
+  OpenOcean 2449.379 -0.001%   – 8 others: not this chain  – 8 others: not this chain
+  CoW Swap  2449.060 -0.014%
+  Relay     2447.943 -0.059%
+  LI.FI     2443.519 -0.240%
+  Bebop     2424.956 -0.998%
+```
+
+**Starknet is the proof.** OpenOcean doesn't serve it at all, so it was added to
+the registry purely for AVNU and Fibrous — and it reports
+"Starknet not on OpenOcean v4" rather than failing. Chains OpenOcean's
+`/tokenList` can't serve get a small seed list in `SEED_TOKENS` so the picker
+still works.
+
+### Unit gotchas in the newer adapters
+
+Three different conventions, all normalised inside the adapters:
+
+| Source | `amount` in | output |
+|---|---|---|
+| Sushi | base units | `assumedAmountOut`, base units |
+| DODO | base units | `resAmount`, **human-readable number** |
+| Balancer | **human-readable** | `returnAmount`, **human-readable** |
+
+DODO and Balancer both round-trip through `toBaseUnits` so the runner can rank
+them against everyone else. Balancer also answers `"0"` rather than erroring
+when no pool path exists, which would otherwise rank as a real (terrible) quote —
+the adapter turns that into `no-route`.
+
+### Uniswap V3 is the control, not a competitor
+
+Every other source is an aggregator. Uniswap V3 is here as a **baseline**: the
+raw single-pool price with no routing, which is what the aggregators should be
+beating. It makes their value measurable instead of assumed.
+
+Both Uniswap HTTP APIs are gated — `trade-api.gateway.uniswap.org` returns 401
+and `api.uniswap.org/v1/quote` returns 409 `ACCESS_DENIED` — so this reads
+**QuoterV2 on-chain** via `eth_call` on a public RPC. No key, and arguably more
+honest than their API anyway. All fee tiers (0.01/0.05/0.3/1%) go out in one
+batched JSON-RPC request and the best pool wins; the winning tier is shown as
+the venue.
+
+RPC note: `publicnode.com` and `drpc.org` send CORS headers; `llamarpc.com` and
+`1rpc.io` do **not**, and `rpc.ankr.com` now requires auth. The adapter tries
+its list in order.
+
+What the baseline actually reveals:
+
+| Trade | Uniswap V3 vs best aggregator |
+|---|---|
+| 1 ETH → USDC (eth) | **tied to 4 decimal places** — everyone routes to the same pool |
+| 500 ETH → USDC | **no quote** — no single pool absorbs it; routing is doing real work |
+| 1 POL → USDC (polygon) | −4.4% — routing genuinely wins |
+| 100 LINK → DAI | no usable route (see below) |
+
+**The thin-pool guard.** QuoterV2 will happily quote a near-empty pool rather
+than reverting: 100 LINK → DAI came back as **1.3 DAI** from a dead 0.3% pool,
+against ~1126 elsewhere. That's a real number, not a decimals bug — but showing
+it as a quote would look like a 99% loss and be worse than useless. So the
+adapter re-quotes at 1/1000th the size and, if the full trade moves the price
+more than 90% off that marginal rate, reports no usable route instead.
+
+### API keys in a static app
+
+Two sources need keys, and a browser-only app cannot hide either. `app.js` is
+public: anything in it is visible in DevTools and to anyone who fetches the file.
+
+- **Enso** works from the browser, so its key is compiled into the bundle and
+  is **public by necessity**. Fine for a playground on a free tier; for anything
+  metered, restrict the key by allowed origin in Enso's dashboard, or move the
+  call behind a server route.
+- **0x** sends no `access-control-allow-origin` header at all — its OPTIONS
+  preflight 401s with no CORS headers — so the browser can *never* call it,
+  whatever the key. Its key is therefore **not** in the bundle: it's read from
+  `.env` (gitignored, auto-loaded by Bun) and used only by the CLI.
+
+```bash
+echo 'ZEROX_API_KEY=your-key' >> .env
+bun run compare -- --chain eth --in ETH --out USDC --amount 1
+```
+
+Without it, 0x reports `Set ZEROX_API_KEY in .env to use 0x` rather than failing
+silently. In the browser it always reports
+`0x blocks browser requests (no CORS) — CLI only`.
+
+Keeping the literal out of `keys.ts` is what actually removes it from the
+bundle. A `--define` dead branch still left the string in the minified output —
+verified — so absence is the only reliable method.
+
+### NEAR Intents uses the 1Click API
+
+Worth documenting because the obvious endpoint is the wrong one.
+
+`solver-relay-v2.chaindefuser.com/rpc` has a `quote` method that looks right and
+validates its params — but returns `result: null` for every pair, because it
+expects a *signed intent published into a live auction*, not a read-only price
+check. Everything reported "No solver bid on this intent", which looked like
+thin liquidity and was actually the wrong API.
+
+The right one is **1Click**:
+
+- `GET https://1click.chaindefuser.com/v0/tokens` — 186 assets across 35 chains
+- `POST https://1click.chaindefuser.com/v0/quote` with `dry: true` — a firm
+  price with nothing committed and no deposit address issued
+
+Mapping is by **address, not symbol**: each asset carries a `contractAddress`
+matching the chain's real token address, and a **null `contractAddress` means
+that chain's native coin**. Two exceptions found by testing:
+
+- **NEAR** has no null-address entry — its native is listed as the wrapped
+  `wNEAR` contract, so the resolver falls back to the `W`-prefixed symbol.
+- **`recipient` is validated against the destination chain's address format**,
+  so an EVM address on Solana fails with "recipient is not valid". Per-chain
+  placeholder addresses are used; `dry: true` means nothing is ever sent to them.
+
+Coverage is the widest of any source here — 35 chains including Bitcoin, XRP,
+Cardano, Dogecoin, TON, Tron, Stellar, Aptos, Sui and Starknet. On NEAR it is
+currently the **only** source that quotes at all.
+
+### Support gaps are not errors
+
+The design rule that shapes the UI: a source that *can't* serve a pair must not
+look broken. `supports()` is checked **before** any request, so an unsupported
+combination costs no network time and renders as a greyed row with a plain
+reason — "Solana is not EVM". Genuine failures get a red badge instead, and the
+four kinds are distinguished:
+
+- `unsupported` — adapter doesn't cover this chain (neutral)
+- `no-route` — supported, but no liquidity path (neutral)
+- `error` — HTTP/WAF/parse failure (red)
+- `timeout` — no answer in 12s (red)
+
+A transport error carrying a 403 is classified `error`, not `no-route`, so a
+blocked request never masquerades as an illiquid pair.
+
+Rows **stream** as each source answers, so one slow API never holds up the table.
+Ranking compares human-scaled values, not raw base units, because sources
+sometimes disagree on a token's decimals.
+
+Measured examples:
+
+```
+1 ETH → USDC on Ethereum        10 SOL → USDC on Solana
+★ ParaSwap   2450.157  best     ★ Jupiter    962.384  best
+  OpenOcean  2450.105  -0.002%    OpenOcean  961.792  -0.062%
+  KyberSwap  2450.067  -0.004%    – KyberSwap  [n/a] not EVM
+  LI.FI      2444.215  -0.243%    – ParaSwap   [n/a] not EVM
+```
+
+From the terminal:
+
+```bash
+bun run compare -- --chain eth --in ETH --out USDC --amount 1
+```
+
+Caveats worth keeping in mind: quotes are indicative and move between blocks, so
+re-running reshuffles near-ties. Gas and each source's own fees are **not**
+deducted, so the ranking is gross output, not net. KyberSwap and ParaSwap are
+quote-only here — both can execute, but each needs a second call to build
+calldata that this playground doesn't make.
 
 ---
 

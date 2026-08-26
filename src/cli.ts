@@ -9,7 +9,7 @@
  * Token symbols resolve via the presets in chains.ts; raw 0x addresses also work.
  */
 
-import { CHAINS } from "./chains.ts";
+import { CHAINS, findChain } from "./chains.ts";
 import {
   getGasPrice,
   getQuote,
@@ -19,6 +19,7 @@ import {
 } from "./openocean.ts";
 import { loadTokens, resolveToken } from "./tokens.ts";
 import { dexesUsed, formatRouteTree, isSplitRoute, routingAdvantage } from "./routes.ts";
+import { compareQuotes, failures as cmpFailures, rank as cmpRank } from "./quotes/run.ts";
 
 function parseArgs(argv: string[]) {
   const out: Record<string, string> = {};
@@ -91,6 +92,39 @@ try {
         );
       }
       if (shown.length > limit) console.log(`  … ${shown.length - limit} more (--limit N, --filter TEXT)`);
+      break;
+    }
+
+    case "compare": {
+      const chainInfo = findChain(chain);
+      if (!chainInfo) throw new Error(`Unknown chain "${chain}"`);
+      const inTok = await resolve(chain, args.in ?? "");
+      const outTok = await resolve(chain, args.out ?? "");
+      const amount = args.amount ?? "1";
+
+      const results = await compareQuotes({
+        chain: chainInfo,
+        inToken: { address: inTok.address, decimals: inTok.decimals ?? 18, symbol: (inTok as any).symbol ?? args.in ?? "" },
+        outToken: { address: outTok.address, decimals: outTok.decimals ?? 18, symbol: (outTok as any).symbol ?? args.out ?? "" },
+        amount,
+        slippage: args.slippage ?? "1",
+        gasPrice: args.gasPrice ?? "3",
+        account: args.account,
+      });
+
+      console.log(`\n  ${amount} ${args.in} → ${args.out} on ${chainInfo.name}`);
+      console.log(`  ${"─".repeat(58)}`);
+      for (const r of cmpRank(results)) {
+        const tag = r.rank === 1 ? "★" : " ";
+        const delta = r.rank === 1 ? "best" : `${r.deltaPct.toFixed(3)}%`;
+        console.log(
+          `  ${tag} ${String(r.rank)}. ${r.outcome.label.padEnd(11)} ${r.human.toFixed(6).padStart(16)}  ${delta.padStart(8)}  ${String(r.outcome.ms).padStart(5)}ms`,
+        );
+      }
+      for (const f of cmpFailures(results)) {
+        console.log(`    –  ${f.label.padEnd(11)} [${f.kind}] ${f.message.slice(0, 46)}`);
+      }
+      console.log();
       break;
     }
 
@@ -170,6 +204,7 @@ try {
     bun run quote  -- --chain bsc --in BNB --out USDT --amount 1
     bun run swap   -- --chain bsc --in BNB --out USDT --amount 1 --account 0xYourAddress
     bun run tokens -- --chain bsc [--filter USD] [--limit 50]
+    bun run compare -- --chain eth --in ETH --out USDC --amount 1
     bun run chains
     bun run gas    -- --chain bsc
 
