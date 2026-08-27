@@ -1,10 +1,12 @@
 /**
  * CLI for poking the API from a terminal.
  *
- *   bun run quote  -- --chain bsc --in BNB --out USDT --amount 1
- *   bun run swap   -- --chain bsc --in BNB --out USDT --amount 1 --account 0x...
- *   bun run tokens -- --chain bsc
- *   bun run gas    -- --chain bsc
+ *   bun run quote  -- --chain eth --in ETH --out USDC --amount 1
+ *   bun run swap   -- --chain eth --in ETH --out USDC --amount 1 --account 0x...
+ *   bun run tokens -- --chain eth
+ *   bun run gas    -- --chain eth
+ *
+ * --chain defaults to `eth`.
  *
  * Token symbols resolve via the presets in chains.ts; raw 0x addresses also work.
  */
@@ -63,7 +65,7 @@ async function resolve(chainCode: string, value: string) {
 
 const [command, ...rest] = Bun.argv.slice(2);
 const args = parseArgs(rest);
-const chain = args.chain ?? "bsc";
+const chain = args.chain ?? "eth";
 
 try {
   switch (command) {
@@ -201,12 +203,12 @@ try {
       console.log(`
   Price Check Tool CLI
 
-    bun run quote  -- --chain bsc --in BNB --out USDT --amount 1
-    bun run swap   -- --chain bsc --in BNB --out USDT --amount 1 --account 0xYourAddress
-    bun run tokens -- --chain bsc [--filter USD] [--limit 50]
+    bun run quote  -- --chain eth --in ETH --out USDC --amount 1
+    bun run swap   -- --chain eth --in ETH --out USDC --amount 1 --account 0xYourAddress
+    bun run tokens -- --chain eth [--filter USD] [--limit 50]
     bun run compare -- --chain eth --in ETH --out USDC --amount 1
     bun run chains
-    bun run gas    -- --chain bsc
+    bun run gas    -- --chain eth
 
   Tokens resolve from each chain's live list — any symbol or address works.
   ${CHAINS.length} chains available; run \`bun run chains\` to list them.

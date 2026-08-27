@@ -939,7 +939,9 @@ async function boot() {
     return;
   }
   $("chainQ").placeholder = `Search ${CHAINS.length} chains…`;
-  const start = CHAINS.find((c) => c.code === "bsc") || CHAINS[0];
+  // Ethereum: the most-quoted chain (15 of 19 sources cover it), so the first
+  // comparison a visitor runs is the most informative one.
+  const start = CHAINS.find((c) => c.code === "eth") || CHAINS[0];
   pickers.chain.set(start);
 
   // Chain logos need a token list per chain, so fetch them alongside the first
@@ -971,7 +973,7 @@ async function boot() {
 
 function params(withAccount) {
   const p = new URLSearchParams({
-    chain: SEL.chain?.code ?? "bsc",
+    chain: SEL.chain?.code ?? "eth",
     in: SEL.in?.address ?? "",
     out: SEL.out?.address ?? "",
     amount: $("amount").value.trim(),
@@ -1037,7 +1039,7 @@ function renderDexTable(d) {
  * { url, data, count?, tokens? } shape the server used to send.
  */
 async function callApi(endpoint, withAccount) {
-  const chain = SEL.chain?.code ?? "bsc";
+  const chain = SEL.chain?.code ?? "eth";
 
   if (endpoint === "gasPrice") {
     return {

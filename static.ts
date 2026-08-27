@@ -37,7 +37,7 @@ const server = Bun.serve({
     // --- dev-only fallback for the Referer-gated endpoints -----------------
     if (path === "/api/quote" || path === "/api/swap") {
       const p = url.searchParams;
-      const chain = p.get("chain") ?? "bsc";
+      const chain = p.get("chain") ?? "eth";
       const base = {
         inTokenAddress: p.get("in") ?? "",
         outTokenAddress: p.get("out") ?? "",
