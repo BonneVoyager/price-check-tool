@@ -73,6 +73,41 @@ const TARGETS = {
       };
     },
   },
+
+  /**
+   * 0x Cross-Chain API — a DIFFERENT endpoint from the swap one above, with
+   * different parameter names (originChain/destinationChain, originAddress).
+   *
+   * Unlike `/swap`, this endpoint IS CORS-open, so the browser could call it
+   * directly — but only by shipping the API key in the bundle. It goes through
+   * the proxy for the same reason the swap target does: to keep the key
+   * server-side.
+   */
+  zeroxCross: {
+    build(p: URLSearchParams) {
+      const key = process.env.ZEROX_API_KEY ?? "";
+      if (!key) throw new Error("ZEROX_API_KEY is not set on the proxy");
+      const qs = new URLSearchParams({
+        originChain: p.get("originChain") ?? "",
+        destinationChain: p.get("destinationChain") ?? "",
+        sellToken: p.get("sellToken") ?? "",
+        buyToken: p.get("buyToken") ?? "",
+        sellAmount: p.get("sellAmount") ?? "",
+        originAddress: p.get("originAddress") ?? "",
+        // Required enum: "price" ranks by output, which is what we compare on.
+        sortQuotesBy: "price",
+      });
+      const dest = p.get("destinationAddress");
+      if (dest) qs.set("destinationAddress", dest);
+      return {
+        url: `https://api.0x.org/cross-chain/quotes?${qs}`,
+        headers: {
+          accept: "application/json",
+          "0x-api-key": key,
+        } as Record<string, string>,
+      };
+    },
+  },
 } satisfies Record<
   string,
   { build(p: URLSearchParams): { url: string; headers: Record<string, string> } }

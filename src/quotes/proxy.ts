@@ -45,7 +45,7 @@ export function proxyBase(): string {
 
 /** Build a proxied URL for one of the allowlisted targets. */
 export function proxyUrl(
-  target: "openocean" | "zerox",
+  target: "openocean" | "zerox" | "zeroxCross",
   params: Record<string, string | number | undefined>,
 ): string {
   const qs = new URLSearchParams({ target });

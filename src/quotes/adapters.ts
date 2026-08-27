@@ -17,6 +17,7 @@ import { proxyAvailable, proxyUrl } from "./proxy.ts";
 import { getQuote, toBaseUnits } from "../openocean.ts";
 import {
   NoRouteError,
+  isCrossChain,
   type NormalQuote,
   type NormalVenue,
   type QuoteAdapter,
@@ -1304,16 +1305,139 @@ const enso: QuoteAdapter = {
 
 const ZEROX_CHAINS = new Set([1, 56, 137, 42161, 10, 8453, 43114, 59144, 534352, 5000, 81457, 146, 480]);
 
+/**
+ * Chains the 0x CROSS-CHAIN API covers, from `GET /cross-chain/sources`.
+ *
+ * A different (larger) set from ZEROX_CHAINS above: the swap API and the
+ * cross-chain API are separate products with separate coverage. Non-EVM
+ * destinations are addressed by NAME rather than the pseudo chain-ids the
+ * sources endpoint reports (999999999991 = Solana), because names are stable
+ * and self-documenting.
+ */
+const ZEROX_CROSS_EVM = new Set([
+  1, 10, 56, 130, 137, 143, 146, 480, 999, 2741, 4217, 4663, 5000, 8453, 9745,
+  42161, 43114, 57073, 59144, 80094, 534352,
+]);
+/** Non-EVM chains the cross-chain API accepts, by our chain code. */
+const ZEROX_CROSS_NAMES: Record<string, string> = { solana: "solana" };
+
+/** The `originChain`/`destinationChain` value for one of our chains. */
+function zeroxCrossChainId(chain: ChainInfo): string | undefined {
+  const named = ZEROX_CROSS_NAMES[chain.code];
+  if (named) return named;
+  if (chain.id != null && ZEROX_CROSS_EVM.has(chain.id)) return String(chain.id);
+  return undefined;
+}
+
+/**
+ * 0x Cross-Chain API: `GET /cross-chain/quotes`.
+ *
+ * Separate endpoint and parameter names from the same-chain swap API
+ * (originChain/destinationChain/originAddress, and a REQUIRED `sortQuotesBy`
+ * enum of "price" | "speed"). It returns a `quotes[]` array of competing bridge
+ * routes; sorting by price means quotes[0] is the best output, which is what we
+ * rank on.
+ *
+ * It aggregates 16 bridges, several of which we already quote directly
+ * (`relay`, `near_intents`), so a 0x win here may be the same underlying route
+ * a dedicated source found. The venue tags name the bridge so that is visible
+ * rather than hidden.
+ */
+async function zeroxCrossQuote(
+  req: QuoteRequest,
+  signal: AbortSignal,
+  inBrowser: boolean,
+): Promise<NormalQuote> {
+  const params = {
+    originChain: zeroxCrossChainId(req.fromChain),
+    destinationChain: zeroxCrossChainId(req.toChain),
+    sellToken: req.inToken.address,
+    buyToken: req.outToken.address,
+    sellAmount: toBaseUnits(req.amount, req.inToken.decimals),
+    // Must match the ORIGIN chain's VM; the destination address must match the
+    // destination's, so a single account cannot serve both across VMs.
+    originAddress: req.fromChain.evm
+      ? req.account || PLACEHOLDER_TAKER
+      : SOL_PLACEHOLDER,
+    destinationAddress: req.toChain.evm ? PLACEHOLDER_TAKER : SOL_PLACEHOLDER,
+  };
+
+  let json: Record<string, any>;
+  let url: string;
+
+  if (inBrowser) {
+    // This endpoint IS CORS-open, unlike /swap — but calling it directly would
+    // mean shipping the API key in the bundle, so it goes through the proxy for
+    // the same reason the swap target does.
+    if (!(await proxyAvailable())) {
+      throw new NoRouteError("0x needs the proxy (API key) — proxy unreachable");
+    }
+    url = proxyUrl("zeroxCross", params);
+    const res = await fetch(url, { signal });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new NoRouteError(body?.error ?? `proxy returned ${res.status}`);
+    }
+    json = (await res.json()) as Record<string, any>;
+  } else {
+    const key = ZEROX_API_KEY;
+    if (!key) throw new NoRouteError("Set ZEROX_API_KEY in .env to use 0x");
+    url = `https://api.0x.org/cross-chain/quotes?` + qs({ ...params, sortQuotesBy: "price" });
+    json = (await getJson(url, signal, { "0x-api-key": key })).json;
+  }
+
+  const best = json.quotes?.[0];
+  if (!best?.buyAmount) {
+    // `liquidityAvailable: false` is a clean no-route, not an error.
+    throw new NoRouteError(
+      json.liquidityAvailable === false
+        ? "no bridge route for this pair"
+        : json.message ?? json.reason ?? "no route",
+    );
+  }
+
+  // steps[] describes swap/bridge legs; the bridge name is the interesting part.
+  const bridges = (best.steps ?? [])
+    .map((st: any) => st?.bridge ?? st?.provider ?? st?.source)
+    .filter(Boolean);
+
+  return {
+    source: "zerox",
+    label: "0x",
+    kind: "api",
+    outAmount: String(best.buyAmount),
+    outDecimals: req.outToken.decimals,
+    minOutAmount: best.minBuyAmount ? String(best.minBuyAmount) : undefined,
+    estimatedGas: best.gasCosts?.gasLimit ? String(best.gasCosts.gasLimit) : undefined,
+    venues: dedupeVenues(bridges.length ? bridges : ["cross-chain"]),
+    url,
+    ms: 0,
+    canExecute: false,
+  };
+}
+
 const zerox: QuoteAdapter = {
   id: "zerox",
   label: "0x",
   blurb: "No CORS — via proxy in the browser",
+  // 0x has a separate Cross-Chain API aggregating 16 bridges.
+  crossChain: true,
 
   supports(req) {
     // In a browser this only works through the proxy (0x sends no CORS at all),
     // but whether the proxy is up is an async question — so allow it here and
     // let quote() report unavailability. That keeps supports() synchronous and
     // side-effect free, which the runner relies on.
+    if (isCrossChain(req)) {
+      // The cross-chain product has its own coverage, including Solana.
+      if (!zeroxCrossChainId(req.fromChain)) {
+        return `${req.fromChain.name} not covered for bridging`;
+      }
+      if (!zeroxCrossChainId(req.toChain)) {
+        return `${req.toChain.name} not covered for bridging`;
+      }
+      return true;
+    }
     if (!req.chain.evm) return `${req.chain.name} is not EVM`;
     if (req.chain.id == null || !ZEROX_CHAINS.has(req.chain.id)) {
       return `${req.chain.name} not covered`;
@@ -1323,6 +1447,8 @@ const zerox: QuoteAdapter = {
 
   async quote(req, signal) {
     const inBrowser = typeof window !== "undefined";
+
+    if (isCrossChain(req)) return zeroxCrossQuote(req, signal, inBrowser);
     const params = {
       chainId: req.chain.id ?? undefined,
       sellToken: req.inToken.address,
