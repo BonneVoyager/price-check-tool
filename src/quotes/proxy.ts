@@ -35,8 +35,20 @@ function currentHost(): string {
  * - `bun run dev` has its own /api/quote proxy already; that path is handled
  *   inside the OpenOcean adapter and doesn't come through here.
  * - Everything else (GitHub Pages, file://) uses the remote deployment.
+ *
+ * `localStorage.proxyBase` overrides all of it. Without that, a proxy change
+ * can only be exercised after deploying — a localhost page points at the
+ * DEPLOYED function, so new proxy targets fail with "Unknown target" until the
+ * deploy lands, which looks like a code bug and isn't one. Set it to
+ * `http://localhost:4319` (or wherever you run api/proxy.ts) to test locally.
  */
 export function proxyBase(): string {
+  try {
+    const override = globalThis.localStorage?.getItem("proxyBase");
+    if (override) return override;
+  } catch {
+    // Private mode / disabled storage: fall through to the defaults.
+  }
   const host = currentHost();
   // Any *.vercel.app deployment of this project serves /api/proxy itself.
   if (host.endsWith(".vercel.app")) return "/api/proxy";

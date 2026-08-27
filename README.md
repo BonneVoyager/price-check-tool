@@ -333,10 +333,46 @@ Works identically on both deployments — the logic is bundled, not server-side.
 Pick a different **To chain** and the same Compare button prices a bridge.
 `ETH` on Ethereum → `USDC` on Solana is one comparison, not a different mode.
 
-Three of the 19 sources bridge — **LI.FI**, **Relay** and **NEAR Intents**. The
-other 16 report `Same-chain only — cannot bridge` as a neutral support gap, the
-same treatment a chain they don't cover gets. Verified live in both directions
-across VMs (EVM→SVM, SVM→EVM, EVM→Stellar).
+**Six** of the 19 sources bridge. The other 13 report `Same-chain only — cannot
+bridge` as a neutral support gap, the same treatment a chain they don't cover
+gets. Verified live in both directions across VMs (EVM→SVM, SVM→EVM,
+EVM→Stellar).
+
+| Source | Endpoint | Key | Notes |
+|---|---|---|---|
+| LI.FI | `GET li.quest/v1/quote` | no | `toAddress` must match the destination VM |
+| Relay | `POST api.relay.link/quote` | no | separate `user`/`recipient` per VM |
+| NEAR Intents | `POST 1click.chaindefuser.com/v0/quote` | no | `refundTo` = origin, `recipient` = destination |
+| 0x | `GET api.0x.org/cross-chain/quotes` | yes | 16 bridges; needs `sortQuotesBy` |
+| Enso | `GET api.enso.finance/…/route` | yes | same endpoint + `destinationChainId` + `receiver` |
+| ParaSwap (Velora) | `GET api.velora.xyz/v2/quote` | **no** | CORS-open, no proxy needed |
+| WOWMAX | `POST …/crosschain/v0/bridge/quote` | no | eth/bsc/stellar only; **symbols**, not addresses |
+
+Ruled out after checking, so the "same-chain only" label is accurate rather
+than merely unexamined:
+
+- **CoW Protocol** — SDK-only. Its `BridgingSdk` calls Across/Bungee/NEAR
+  Intents client-side; the orderbook OpenAPI spec has no bridge endpoint and
+  `api.cow.fi/…/bridge/*` 404s. Adding it would mean taking a dependency.
+- **Uniswap** and **DODO** — both have REST cross-chain endpoints, but they are
+  key-gated (401 `Unauthenticated api key`, 401 `Missing API key`) and we have
+  no key for either.
+- **KyberSwap**, **ParaSwap's legacy `/prices`** — accept a destination-chain
+  param and simply ignore it, returning a same-chain "route not found".
+- **Jupiter**, **AVNU**, **Soroswap** — their apps show a Bridge tab, but it
+  embeds a third party (deBridge, NEAR Intents, Allbridge Core) rather than
+  exposing a bridge quote of their own.
+- **Bebop**, **Balancer**, **Sushi**, **Fibrous** — no cross-chain REST API.
+- **OpenOcean** — markets cross-chain aggregation, but every documented v4
+  endpoint takes a single chain in the path. An undocumented `/v1/cross/quote`
+  exists and validates its schema, then returns `code: 500 "quote error"` for
+  every field combination tried. Their docs site is now an SPA 404ing every
+  deep path, so this stays UNCONFIRMED rather than guessed at.
+
+A cross-chain win is sometimes the same underlying route a dedicated source
+already quotes — 0x aggregates `relay` and `near_intents`, Velora chose `Relay`
+in testing, and Enso routes over `stargate`. The venue tag names the bridge so
+that overlap is visible instead of hidden.
 
 ### `chain` is an alias, not a third field
 
