@@ -1244,11 +1244,16 @@ const enso: QuoteAdapter = {
   id: "enso",
   label: "Enso",
   blurb: "Route engine (API key, public)",
+  // Same endpoint bridges: add destinationChainId + receiver and it routes
+  // across chains, combining a bridge leg with a swap leg.
+  crossChain: true,
 
   supports(req) {
-    if (!req.chain.evm) return `${req.chain.name} is not EVM`;
-    if (req.chain.id == null || !ENSO_CHAINS.has(req.chain.id)) {
-      return `${req.chain.name} not covered`;
+    // Both sides must be EVM chains Enso covers — the route is expressed as
+    // EVM addresses on both, so a non-EVM side cannot be represented.
+    for (const c of isCrossChain(req) ? [req.fromChain, req.toChain] : [req.chain]) {
+      if (!c.evm) return `${c.name} is not EVM`;
+      if (c.id == null || !ENSO_CHAINS.has(c.id)) return `${c.name} not covered`;
     }
     return true;
   },
@@ -1256,10 +1261,15 @@ const enso: QuoteAdapter = {
   async quote(req, signal) {
     // Enso rejects the zero address and precompiles as fromAddress, so a real
     // funded EOA stands in when the user hasn't supplied one.
+    const cross = isCrossChain(req);
     const url =
       `https://api.enso.finance/api/v1/shortcuts/route?` +
       qs({
-        chainId: req.chain.id ?? undefined,
+        chainId: req.fromChain.id ?? undefined,
+        // Only sent when bridging: Enso 400s with "receiver is required when
+        // destinationChainId is set", so the two travel together.
+        destinationChainId: cross ? req.toChain.id ?? undefined : undefined,
+        receiver: cross ? req.account || PLACEHOLDER_TAKER : undefined,
         fromAddress: req.account || PLACEHOLDER_TAKER,
         tokenIn: req.inToken.address,
         tokenOut: req.outToken.address,
