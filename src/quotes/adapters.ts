@@ -370,20 +370,74 @@ const PARASWAP_CHAINS = new Set([
   1, 56, 137, 42161, 10, 8453, 43114, 250, 59144, 1101, 146,
 ]);
 
+/**
+ * Velora Delta cross-chain: `GET api.velora.xyz/v2/quote` with `mode=DELTA`.
+ *
+ * `chainId` is the source and `destChainId` the destination. The output lives at
+ * `delta.route.destination.output.amount` — there is no flat `destAmount` field
+ * on this response, and `route.bridge.protocol` names the bridge it chose
+ * (observed: Relay, Across).
+ *
+ * Needs no API key and sends `access-control-allow-origin: *`, so unlike 0x's
+ * cross-chain endpoint this one needs no proxy at all.
+ */
+async function veloraCrossQuote(
+  req: QuoteRequest,
+  signal: AbortSignal,
+): Promise<NormalQuote> {
+  const url =
+    `https://api.velora.xyz/v2/quote?` +
+    qs({
+      chainId: req.fromChain.id ?? undefined,
+      destChainId: req.toChain.id ?? undefined,
+      mode: "DELTA",
+      srcToken: req.inToken.address,
+      destToken: req.outToken.address,
+      amount: toBaseUnits(req.amount, req.inToken.decimals),
+      srcDecimals: req.inToken.decimals,
+      destDecimals: req.outToken.decimals,
+      side: "SELL",
+      userAddress: req.account || PLACEHOLDER_TAKER,
+    });
+
+  const { json } = await getJson(url, signal);
+  const delta = json.delta;
+  const out = delta?.route?.destination?.output?.amount;
+  if (!out) {
+    throw new NoRouteError(json.error ?? json.message ?? "no delta route");
+  }
+
+  return {
+    source: "paraswap",
+    label: "ParaSwap",
+    kind: "intent",
+    outAmount: String(out),
+    outDecimals: req.outToken.decimals,
+    venues: dedupeVenues([delta.route?.bridge?.protocol]),
+    url,
+    ms: 0,
+    canExecute: false,
+  };
+}
+
 const paraswap: QuoteAdapter = {
   id: "paraswap",
   label: "ParaSwap",
   blurb: "EVM only, Velora/ParaSwap network",
+  // Velora (ParaSwap's successor brand) bridges via Delta on a separate v2
+  // endpoint. No API key and CORS-open, so it works in the browser directly.
+  crossChain: true,
 
   supports(req) {
-    if (!req.chain.evm) return `${req.chain.name} is not EVM`;
-    if (req.chain.id == null || !PARASWAP_CHAINS.has(req.chain.id)) {
-      return `${req.chain.name} not covered`;
+    for (const c of isCrossChain(req) ? [req.fromChain, req.toChain] : [req.chain]) {
+      if (!c.evm) return `${c.name} is not EVM`;
+      if (c.id == null || !PARASWAP_CHAINS.has(c.id)) return `${c.name} not covered`;
     }
     return true;
   },
 
   async quote(req, signal) {
+    if (isCrossChain(req)) return veloraCrossQuote(req, signal);
     const amount = toBaseUnits(req.amount, req.inToken.decimals);
     const url =
       `https://api.paraswap.io/prices?` +
@@ -442,6 +496,9 @@ const LIFI_NON_EVM: Record<string, number> = {
 
 /** A funded Solana account, for sources that require a same-VM address. */
 const SOL_PLACEHOLDER = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+/** A real funded Stellar account, for APIs that validate the address format. */
+const STELLAR_PLACEHOLDER =
+  "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
 const lifi: QuoteAdapter = {
   id: "lifi",
@@ -1946,17 +2003,100 @@ const WOWMAX_CHAINS: Record<string, number> = {
   stellar: WOWMAX_STELLAR_ID,
 };
 
+/**
+ * Chains WOWMAX's BRIDGE api covers — a much narrower set than its swap API,
+ * from `GET /crosschain/v0/bridge/chains`: ["bsc","stellar","eth"].
+ *
+ * Narrow, but it is the only source here that bridges EVM <-> Stellar.
+ */
+const WOWMAX_BRIDGE_CHAINS = new Set(["eth", "bsc", "stellar"]);
+
+/**
+ * WOWMAX bridge aggregator: `POST /crosschain/v0/bridge/quote`.
+ *
+ * Undocumented in their marketing and absent from the SDK; found in the live
+ * OpenAPI spec at api-gateway.wowmax.exchange/docs-json, whose entry declares
+ * no request body, so the field names came from probing the API itself.
+ *
+ * Two things make it unlike every other adapter here:
+ *  - Tokens are SYMBOLS ("USDT"), not addresses. Passing an address returns an
+ *    empty result set with per-bridge rejection reasons.
+ *  - It returns a RANKED array of competing bridges in `merged[]`, so
+ *    `merged[0]` is their pick (observed: axelar, squid, near-intents).
+ *
+ * Because it is symbol-keyed it cannot quote an arbitrary/unlisted token, so
+ * the adapter requires a symbol on both sides.
+ */
+async function wowmaxBridgeQuote(
+  req: QuoteRequest,
+  signal: AbortSignal,
+): Promise<NormalQuote> {
+  const url = "https://api-gateway.wowmax.exchange/crosschain/v0/bridge/quote";
+  // Sender/recipient must each match their own chain's address format.
+  const addrFor = (chain: ChainInfo) =>
+    chain.code === "stellar" ? STELLAR_PLACEHOLDER : PLACEHOLDER_TAKER;
+
+  const json = await postJson(
+    url,
+    {
+      fromChain: req.fromChain.code,
+      fromToken: req.inToken.symbol,
+      amount: req.amount,
+      toChain: req.toChain.code,
+      toToken: req.outToken.symbol,
+      sender: req.account || addrFor(req.fromChain),
+      recipient: req.account || addrFor(req.toChain),
+    },
+    signal,
+  );
+
+  const best = json.merged?.[0];
+  if (!best?.amountOut) {
+    throw new NoRouteError("no bridge quoted this pair");
+  }
+
+  return {
+    source: "wowmax",
+    label: "WOWMAX",
+    // amountOut is a DECIMAL string here, not base units, unlike the swap API.
+    outAmount: toBaseUnits(String(best.amountOut), req.outToken.decimals),
+    outDecimals: req.outToken.decimals,
+    venues: dedupeVenues([best.bridge]),
+    url,
+    ms: 0,
+    canExecute: false,
+  };
+}
+
 const wowmax: QuoteAdapter = {
   id: "wowmax",
   label: "WOWMAX",
   blurb: "EVM + Stellar aggregator",
+  // Separate bridge-aggregator API; the only EVM <-> Stellar route here.
+  crossChain: true,
 
   supports(req) {
+    if (isCrossChain(req)) {
+      for (const c of [req.fromChain, req.toChain]) {
+        if (!WOWMAX_BRIDGE_CHAINS.has(c.code)) {
+          return `${c.name} not on WOWMAX's bridge (eth, bsc, stellar only)`;
+        }
+      }
+      // Symbol-keyed API: an unlisted token pasted as an address has the
+      // placeholder label, which would silently quote the wrong asset.
+      for (const t of [req.inToken, req.outToken]) {
+        if (!t.symbol || t.symbol.startsWith("0x") || /\s/.test(t.symbol)) {
+          return "Bridge needs a listed token symbol";
+        }
+      }
+      return true;
+    }
     if (!WOWMAX_CHAINS[req.chain.code]) return `${req.chain.name} not covered`;
     return true;
   },
 
   async quote(req, signal) {
+    if (isCrossChain(req)) return wowmaxBridgeQuote(req, signal);
     const chainId = WOWMAX_CHAINS[req.chain.code]!;
     const url =
       `${WOWMAX_BASE}/chains/${chainId}/quote?` +
