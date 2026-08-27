@@ -1315,6 +1315,28 @@ async function compareAll() {
  * whole comparison exists to produce. It's now the first thing you read, with
  * the caveats moved to a footnote where they belong.
  */
+/**
+ * Warn when the output is so small that rounding dominates the comparison.
+ *
+ * Real case: 1 BONK (5 decimals, ~$0.00002) into 6-decimals USDC produces an
+ * output of a few base units, and the ranking showed -38% and -77% "differences"
+ * that were pure quantisation. At a realistic size the same pair spreads 0.25%.
+ * Rather than silently mislead, say so — the sources aren't disagreeing, the
+ * amount is just dust.
+ */
+function dustWarning(ranked) {
+  if (ranked.length < 2) return "";
+  const best = ranked[0];
+  const decimals = best.outcome.outDecimals ?? 18;
+  // Fewer than ~4 significant base units means each unit is a big % of output.
+  const baseUnits = best.human * 10 ** decimals;
+  if (baseUnits >= 10_000) return "";
+  return `<div class="v-meta" style="color:var(--amber)">
+    Output is only ${Math.round(baseUnits)} base units — the percentages below are
+    rounding noise, not price differences. Try a larger amount.
+  </div>`;
+}
+
 function cmpVerdict(ranked, done) {
   if (!ranked.length) return "";
 
@@ -1336,6 +1358,7 @@ function cmpVerdict(ranked, done) {
         <strong class="v-src">${esc(best.outcome.label)}</strong>
         <span class="v-out">${out} <span class="v-sym">${sym}</span></span>
       </div>
+      ${dustWarning(ranked)}
       ${ranked.length > 1
         ? `<div class="v-meta">
              +${lead.toFixed(3)}% over ${esc(second.outcome.label)}

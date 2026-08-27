@@ -295,8 +295,8 @@ only learn whether a route is good by asking someone else.
 | ParaSwap | 11 EVM chains | quote only here |
 | CoW Swap | 7 EVM chains | batch auction; output is **net of fee** |
 | Bebop | 9 EVM chains | RFQ from market makers |
-| Relay | EVM (cross-chain router) | used same-chain |
-| LI.FI | EVM (meta-aggregator) | also bridges |
+| Relay | EVM **+ Solana** (cross-chain router) | used same-chain |
+| LI.FI | EVM **+ Solana** (meta-aggregator) | also bridges |
 | NEAR Intents | 35 chains incl. BTC/XRP/ADA/DOGE/TON | 1Click API |
 | Enso | 14 EVM chains | **API key** (public in bundle) |
 | 0x | 13 EVM chains | **CLI only** — no CORS |
@@ -494,6 +494,59 @@ Keeping the literal out of `keys.ts` is what actually removes it from the
 bundle. A `--define` dead branch still left the string in the minified output —
 verified — so absence is the only reliable method.
 
+### Relay and LI.FI do support Solana
+
+Both originally reported "needs non-EVM ids", which was a placeholder I wrote
+rather than a limitation — and it was wrong. Both work; each needed one lookup:
+
+- **LI.FI** uses chain id **`1151111081099710`** for Solana. `GET /v1/chains`
+  returns EVM-only by default, which is what made it look unsupported —
+  `?chainTypes=EVM,SVM` reveals it.
+- **Relay** uses **`792703809`**, from `GET /chains` (each entry carries a
+  `vmType`). It also lists Bitcoin, XRP, TON, Tron and Eclipse.
+
+Two things had to be right beyond the chain id, or both 400:
+
+- **`fromAddress`/`user` must match the chain's VM.** An EVM placeholder address
+  on Solana is rejected, so a real Solana account stands in.
+- **Relay's native coin is the chain's own zero-ish address**, not our sentinel
+  and not the wrapped-SOL mint: on Solana it's `1111…1111` (32 ones, the System
+  Program id).
+
+Solana went from 2 quoting sources to 4:
+
+```
+★ Jupiter   97.843  best      Relay   97.787  -0.058%
+  OpenOcean 97.789 -0.056%    LI.FI   97.603  -0.246%
+```
+
+Starknet and Stellar now say plainly "not covered" for these two, rather than
+implying a mapping exists.
+
+**Verified beyond SOL.** All four Solana sources quote arbitrary SPL pairs in
+both directions, not just native-in:
+
+| Pair | Quoting | Spread |
+|---|---|---|
+| USDC → USDT | 5 (incl. NEAR Intents) | 0.14% |
+| JUP → USDC | 4 | 0.25% |
+| USDC → JUP | 4 | 0.67% |
+| TRUMP → USDC | 5 | 0.31% |
+| MSOL → USDC | 4 | 0.21% |
+| JITOSOL → SOL | 4 | 0.25% |
+| BONK → USDC (10M) | 4 | 0.25% |
+
+NEAR Intents sits out where its own registry lacks the token (JUP, MSOL, BONK),
+which is a coverage gap rather than a mapping bug — its listed pairs quote.
+
+**Dust amounts.** `1 BONK` (5 decimals, ~$0.00002) into 6-decimals USDC produces
+an output of ~8 base units, and the table showed "-38%" and "-77%" differences
+that were pure rounding. The same pair at 10M BONK spreads 0.25%. The verdict
+now detects that (<10,000 base units of output) and says the percentages are
+noise, instead of presenting quantisation as a ranking.
+
+
+
 ### NEAR Intents uses the 1Click API
 
 Worth documenting because the obvious endpoint is the wrong one.
@@ -685,6 +738,40 @@ the fallback — and there's nothing to deploy for it.
 
 The CLI (`bun run quote`, `tokens`, `chains`) is a local tool and doesn't
 deploy. It sets the `Referer` explicitly, which is why it works from a terminal.
+
+---
+
+## OpenOcean's WAF is an origin allowlist
+
+Follow-up to the Referer finding below, and it supersedes part of it. Cloudflare
+in front of `/quote` and `/swap` doesn't just want *a* Referer — it allowlists
+specific origins, and nothing sent from a browser can talk it round.
+
+Measured from real deployed origins:
+
+| Origin | `/quote` | `gasPrice`, `tokenList` |
+|---|---|---|
+| `openocean-playground.vercel.app` | **200** | 200 |
+| `bonnevoyager.github.io` (https!) | **403** | 200 |
+| `http://localhost` | **403** | 200 |
+| `file://` | **403** | 200 |
+
+So it is **not** an http-vs-https distinction — a plain GitHub Pages site over
+https is blocked while a Vercel one is not. Also checked and ruled out: every
+`referrerPolicy` (`no-referrer`, `origin`, `unsafe-url`) is 403 from a blocked
+origin, and `v3/quote` and `v4/swap` are blocked identically. `gasPrice` and
+`tokenList` stay open, which is why only *quoting* breaks and the token picker
+keeps working.
+
+**Consequence:** on GitHub Pages, OpenOcean sits out and the other 18 sources
+quote normally. The adapter says
+`OpenOcean's WAF blocks this origin (…) — needs a proxy or an allowlisted domain`
+and is classified `no-route` (neutral grey), not a red error, because it's a
+known limitation rather than a fault.
+
+To get OpenOcean quoting on a static host you need a server-side hop — a Vercel
+Function, or `bun run dev`, which already proxies `/quote` locally for this
+reason.
 
 ---
 

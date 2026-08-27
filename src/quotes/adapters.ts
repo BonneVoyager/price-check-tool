@@ -180,23 +180,56 @@ const openocean: QuoteAdapter = {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const gated = /403|Cloudflare/i.test(msg);
-      const loc = (globalThis as { location?: { hostname?: string } }).location;
-      const canProxy = loc?.hostname === "localhost";
+      if (!gated) throw new NoRouteError(msg);
 
-      if (!gated || !canProxy) throw new NoRouteError(msg);
+      // The WAF rejects the ORIGIN, and no client-side header can change it.
+      // Measured, from real origins:
+      //   vercel.app          -> 200
+      //   github.io  (https)  -> 403   <- NOT an http/https thing
+      //   localhost / file:   -> 403
+      // Every referrerPolicy (no-referrer / origin / unsafe-url) is 403 from a
+      // blocked origin, and v3/quote and v4/swap are blocked the same way, so
+      // this is an allowlist on their side rather than anything we can satisfy.
+      // gasPrice and tokenList stay open, which is why only quoting breaks.
+      const loc = (globalThis as { location?: { hostname?: string; protocol?: string } })
+        .location;
+      const host = loc?.hostname ?? "";
+      const isFile = loc?.protocol === "file:";
+      const isLocal = host === "localhost" || host === "127.0.0.1";
 
-      const proxied = `/api/quote?${qs({
-        chain: req.chain.code,
-        in: req.inToken.address,
-        out: req.outToken.address,
-        amount: req.amount,
-        gasPrice: params.gasPrice,
-        slippage: params.slippage,
-      })}`;
-      const res = await fetch(proxied, { signal });
-      const body = (await res.json()) as Record<string, any>;
-      if (!res.ok) throw new NoRouteError(body?.error ?? "dev proxy failed");
-      d = body;
+      // `bun run dev` proxies /quote for exactly this reason. The single-file
+      // build has no server behind it, so there is nothing to fall back to —
+      // detect that instead of fetching /api/quote and failing on the HTML.
+      let proxied: Record<string, any> | null = null;
+      if (isLocal) {
+        try {
+          const res = await fetch(
+            `/api/quote?${qs({
+              chain: req.chain.code,
+              in: req.inToken.address,
+              out: req.outToken.address,
+              amount: req.amount,
+              gasPrice: params.gasPrice,
+              slippage: params.slippage,
+            })}`,
+            { signal },
+          );
+          if (res.ok && (res.headers.get("content-type") ?? "").includes("json")) {
+            proxied = (await res.json()) as Record<string, any>;
+          }
+        } catch {
+          // No dev proxy here (e.g. the single-file build on a plain server).
+        }
+      }
+
+      if (!proxied) {
+        throw new NoRouteError(
+          isLocal || isFile
+            ? "OpenOcean's WAF blocks local origins — run `bun run dev` to proxy it"
+            : `OpenOcean's WAF blocks this origin (${host}) — needs a proxy or an allowlisted domain`,
+        );
+      }
+      d = proxied;
     }
 
     // Flatten the nested path into a venue list.
@@ -367,30 +400,48 @@ const paraswap: QuoteAdapter = {
 /** Placeholder when the user hasn't supplied a wallet — LI.FI requires one. */
 const ZERO_ADDR = "0x0000000000000000000000000000000000000001";
 
+/**
+ * Non-EVM chain ids LI.FI accepts. Solana is `1151111081099710` (SVM), which
+ * `GET /v1/chains` only reveals with `?chainTypes=EVM,SVM` — the default
+ * response is EVM-only, which is why this looked unsupported at first.
+ */
+const LIFI_NON_EVM: Record<string, number> = {
+  solana: 1151111081099710,
+};
+
+/** A funded Solana account, for sources that require a same-VM address. */
+const SOL_PLACEHOLDER = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+
 const lifi: QuoteAdapter = {
   id: "lifi",
   label: "LI.FI",
   blurb: "Meta-aggregator, also bridges cross-chain",
 
   supports(req) {
-    // LI.FI covers Solana too, but keyed by its own ids; restrict to what we
-    // can address confidently rather than guessing a mapping.
-    if (!req.chain.evm) return `${req.chain.name} needs LI.FI's non-EVM ids`;
-    if (req.chain.id == null) return `${req.chain.name} has no chain id`;
+    if (!req.chain.evm && !LIFI_NON_EVM[req.chain.code]) {
+      return `${req.chain.name} not covered`;
+    }
+    if (req.chain.evm && req.chain.id == null) {
+      return `${req.chain.name} has no chain id`;
+    }
     return true;
   },
 
   async quote(req, signal) {
     const fromAmount = toBaseUnits(req.amount, req.inToken.decimals);
+    const chainId = LIFI_NON_EVM[req.chain.code] ?? req.chain.id ?? undefined;
+    // fromAddress must match the chain's VM — an EVM address on Solana is
+    // rejected outright.
+    const fallbackAddr = req.chain.evm ? ZERO_ADDR : SOL_PLACEHOLDER;
     const url =
       `https://li.quest/v1/quote?` +
       qs({
-        fromChain: req.chain.id ?? undefined,
-        toChain: req.chain.id ?? undefined,
+        fromChain: chainId,
+        toChain: chainId,
         fromToken: req.inToken.address,
         toToken: req.outToken.address,
         fromAmount,
-        fromAddress: req.account || ZERO_ADDR,
+        fromAddress: req.account || fallbackAddr,
         slippage: Number(req.slippage || "1") / 100,
       });
 
@@ -671,31 +722,66 @@ const bebop: QuoteAdapter = {
 // Relay — cross-chain router; here used same-chain so it's comparable.
 // ---------------------------------------------------------------------------
 
+/**
+ * Relay's own chain ids for non-EVM networks, from GET /chains (each carries a
+ * `vmType`). It also serves Bitcoin, XRP, TON, Tron and Eclipse; only Solana is
+ * wired here because it's the one our registry has tokens for.
+ */
+const RELAY_NON_EVM: Record<string, number> = {
+  solana: 792703809,
+};
+
+/**
+ * Relay denotes a chain's native coin with that chain's own zero-ish address,
+ * not our sentinel. On Solana that's 32 "1"s — NOT the wrapped-SOL mint, which
+ * it rejects.
+ */
+const RELAY_NATIVE: Record<string, string> = {
+  solana: "11111111111111111111111111111111",
+};
+
 const relay: QuoteAdapter = {
   id: "relay",
   label: "Relay",
   blurb: "Cross-chain router (same-chain too)",
 
   supports(req) {
-    if (!req.chain.evm) return `${req.chain.name} needs Relay's non-EVM ids`;
-    if (req.chain.id == null) return `${req.chain.name} has no chain id`;
+    if (!req.chain.evm && !RELAY_NON_EVM[req.chain.code]) {
+      return `${req.chain.name} not covered`;
+    }
+    if (req.chain.evm && req.chain.id == null) {
+      return `${req.chain.name} has no chain id`;
+    }
     return true;
   },
 
   async quote(req, signal) {
     const url = "https://api.relay.link/quote";
+    const chainId = RELAY_NON_EVM[req.chain.code] ?? req.chain.id;
+    // Native sentinel -> Relay's per-chain native address. EVM uses the zero
+    // address; Solana uses 32 "1"s (its System Program id).
+    const nativeAddr =
+      RELAY_NATIVE[req.chain.code] ?? "0x0000000000000000000000000000000000000000";
+    const isNativeFor = (addr: string) =>
+      isNativeSentinel(addr) ||
+      (!req.chain.evm && addr.toLowerCase().startsWith("so1111"));
+
+    // `user` must be an address on the origin chain's VM.
+    const user =
+      req.account || (req.chain.evm ? PLACEHOLDER_TAKER : SOL_PLACEHOLDER);
+
     const json = await postJson(
       url,
       {
-        user: req.account || PLACEHOLDER_TAKER,
-        originChainId: req.chain.id,
-        destinationChainId: req.chain.id,
-        // Relay denotes the native coin with the zero address.
-        originCurrency: isNativeSentinel(req.inToken.address)
-          ? "0x0000000000000000000000000000000000000000"
+        user,
+        recipient: user,
+        originChainId: chainId,
+        destinationChainId: chainId,
+        originCurrency: isNativeFor(req.inToken.address)
+          ? nativeAddr
           : req.inToken.address,
-        destinationCurrency: isNativeSentinel(req.outToken.address)
-          ? "0x0000000000000000000000000000000000000000"
+        destinationCurrency: isNativeFor(req.outToken.address)
+          ? nativeAddr
           : req.outToken.address,
         amount: toBaseUnits(req.amount, req.inToken.decimals),
         tradeType: "EXACT_INPUT",
@@ -893,18 +979,32 @@ interface OneClickAsset {
   contractAddress?: string | null;
 }
 
-/** Registry is ~186 entries and stable; fetch once per session. */
-let oneClickAssets: Promise<OneClickAsset[]> | null = null;
+/**
+ * Registry cache, with a short TTL rather than once-per-session.
+ *
+ * The list is NOT stable: it was 186 assets one day and 98 the next, with USDC
+ * disappearing from Solana and Stellar in between. Caching it for the lifetime
+ * of the page meant a fetch during a shrunken window kept the tool wrong until
+ * a manual reload. 5 minutes keeps the fan-out cheap while letting the list
+ * recover on its own.
+ */
+const ONECLICK_TTL_MS = 5 * 60 * 1000;
+let oneClickAssets: { at: number; p: Promise<OneClickAsset[]> } | null = null;
+
 function loadOneClickAssets(signal: AbortSignal): Promise<OneClickAsset[]> {
-  oneClickAssets ??= (async () => {
+  if (oneClickAssets && Date.now() - oneClickAssets.at < ONECLICK_TTL_MS) {
+    return oneClickAssets.p;
+  }
+  const p = (async () => {
     const { json } = await getJson(`${ONECLICK_BASE}/tokens`, signal);
     // This endpoint returns a bare array, not an envelope.
     return (Array.isArray(json) ? json : []) as OneClickAsset[];
   })().catch((err) => {
-    oneClickAssets = null; // allow a later retry
+    oneClickAssets = null; // allow an immediate retry after a failure
     throw err;
   });
-  return oneClickAssets;
+  oneClickAssets = { at: Date.now(), p };
+  return p;
 }
 
 /**
@@ -975,7 +1075,21 @@ const nearIntents: QuoteAdapter = {
     const to = findOneClickAsset(assets, chainKey, req.outToken);
     if (!from || !to) {
       const missing = !from ? req.inToken.symbol : req.outToken.symbol;
-      throw new NoRouteError(`${missing} not bridgeable via NEAR Intents`);
+      // "not in the registry" rather than "not bridgeable": 1Click's asset list
+      // is volatile — it went from 186 assets to 98 between two runs, dropping
+      // USDC from Solana (7 assets left) and from Stellar (1 left) entirely.
+      // The pair may well work again later, and a listed pair on the same chain
+      // still quotes fine, so this is not a permanent property of the token.
+      const listed = assets.filter((a) => a.blockchain === chainKey).length;
+      // Distinguish "this token isn't listed" from "the registry itself is
+      // degraded". Observed live: the list collapsed 186 -> 98 -> 2 assets
+      // within an hour, and /quote then rejected assetIds it had just accepted
+      // ("tokenIn is not valid"). Blaming the token there would be wrong.
+      throw new NoRouteError(
+        assets.length < 20
+          ? `NEAR Intents' asset registry is degraded (${assets.length} assets total) — try again later`
+          : `${missing} not in NEAR Intents' list for ${req.chain.name} (${listed} listed there)`,
+      );
     }
     if (from.assetId === to.assetId) throw new NoRouteError("Same asset both sides");
 
