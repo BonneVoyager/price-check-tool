@@ -556,6 +556,38 @@ SHX/BTC/PYUSD all quote, where all but USDC previously refused. A pasted `C…`
 id passes through unchanged, and malformed input is still rejected in
 `supports()` before any request goes out.
 
+#### Soroswap picks the wrong SDEX path on large trades
+
+Not our bug, but worth knowing before trusting its number on a big order.
+
+100,000 `USDC` → `PYUSD` returns **4.20** from Soroswap against **59,305** from
+WOWMAX. The two agree to four decimals at 20,000 (19992.1555 vs 19992.1554), so
+this is size-dependent, not a mapping error.
+
+Querying Stellar Horizon's `strict-send` endpoint directly — no Soroswap in the
+path — shows why:
+
+| | destination_amount | hops |
+|---|---|---|
+| `record[0]` | 3,184.07 | 1 (via XLM) |
+| `record[1]` | **4.1998** | 0 (direct) |
+
+Soroswap returns `record[1]`. The **direct** USDC/PYUSD order book holds only
+about 4 PYUSD of depth, so above ~20,000 it flatlines — 50k, 80k and 100k all
+return ~4.199, an output that ignores the input size entirely. WOWMAX routes via
+XLM and keeps scaling. Soroswap's `rawTrade` is Horizon's own response, which
+confirms it is faithfully reporting the worse of the two paths rather than
+mis-parsing anything.
+
+Its `priceImpactPct` is unusable at these sizes too (2,381,986 for the 100k
+quote), so the ranking ignores it.
+
+The UI now names this rather than averaging it in: when the best and worst
+quotes differ by 10x or more, `outlierWarning()` says "Soroswap returned 14,121x
+less than WOWMAX" and **omits** the percentages, because "+99.993% over" and a
+"1411967% spread" read like a bug in the tool. Below 10x, the normal spread is
+shown as before.
+
 ### Source-kind tags
 
 The comparison table tags **how** a price was obtained, which is orthogonal to

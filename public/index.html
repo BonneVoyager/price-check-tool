@@ -1615,6 +1615,39 @@ function dustWarning(ranked) {
   </div>`;
 }
 
+/**
+ * Warn when one source is so far off the pack that the percentages stop meaning
+ * anything.
+ *
+ * Real case: 100,000 USDC -> PYUSD on Stellar. Soroswap returned 4.20 against
+ * WOWMAX's 59,305, which renders as "+99.993% over" and a "1411967% spread" —
+ * numbers that read like a bug in the tool. They aren't: Horizon offers two
+ * paths at that size and Soroswap takes the DIRECT one, whose order book holds
+ * only ~4 PYUSD of depth, while WOWMAX routes via XLM. Both agree to the cent
+ * at 20,000, where the direct book still has depth.
+ *
+ * So the outlier is a real quote, but averaging it into a "spread" invites the
+ * wrong conclusion. Name it instead.
+ */
+function outlierWarning(ranked) {
+  if (ranked.length < 2) return "";
+  const best = ranked[0];
+  const worst = ranked[ranked.length - 1];
+  if (!(worst.human > 0) || !(best.human > 0)) return "";
+  // An order of magnitude is far beyond any routing or fee difference.
+  const ratio = best.human / worst.human;
+  if (ratio < 10) return "";
+  const factor =
+    ratio >= 1000
+      ? `${Math.round(ratio).toLocaleString()}x less`
+      : `${ratio.toFixed(1)}x less`;
+  return `<div class="v-meta" style="color:var(--amber)">
+    ${esc(worst.outcome.label)} returned ${factor} than ${esc(best.outcome.label)}
+    — at this size that is usually a routing gap on a thin venue, not a real
+    price. Percentages against it would be meaningless, so they are omitted.
+  </div>`;
+}
+
 function cmpVerdict(ranked, done) {
   if (!ranked.length) return "";
 
@@ -1628,6 +1661,9 @@ function cmpVerdict(ranked, done) {
   const spread = worst.human > 0 ? ((best.human - worst.human) / worst.human) * 100 : 0;
   const second = ranked[1];
   const lead = second ? Math.abs(second.deltaPct) : 0;
+  // Computed once: it decides both the warning and whether the aggregate spread
+  // is worth printing at all.
+  const outlier = outlierWarning(ranked);
 
   return `
     <div class="verdict${done ? "" : " pending-v"}">
@@ -1637,12 +1673,15 @@ function cmpVerdict(ranked, done) {
         <span class="v-out">${out} <span class="v-sym">${sym}</span></span>
       </div>
       ${dustWarning(ranked)}
-      ${ranked.length > 1
+      ${outlier}
+      ${ranked.length > 1 && !outlier
         ? `<div class="v-meta">
              +${lead.toFixed(3)}% over ${esc(second.outcome.label)}
              <span class="v-dot">·</span>
              ${Math.abs(spread).toFixed(3)}% spread across ${ranked.length} quotes
            </div>`
+        : ranked.length > 1
+        ? ""
         : `<div class="v-meta">Only one source quoted this pair — nothing to compare against.</div>`}
     </div>`;
 }
