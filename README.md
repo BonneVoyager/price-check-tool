@@ -361,6 +361,31 @@ the registry purely for AVNU and Fibrous — and it reports
 `/tokenList` can't serve get a small seed list in `SEED_TOKENS` so the picker
 still works.
 
+### The chain-switch race (fixed)
+
+Worth recording because it produced a bug report from an upstream team rather
+than a visible error here.
+
+`loadTokensFor()` had no guard against overlapping calls. Token lists range from
+instant (5 seeded entries for Stellar) to ~660 fetched, so switching chains
+quickly let a **slow load resolve after a newer one** and stamp its tokens over
+the current chain. Reproduced deterministically: pick Polygon, wait 60ms, pick
+Stellar → chain reads "Stellar" while the tokens are `POL` / `0xEeee…` and the
+note says "97 tokens on polygon".
+
+Every adapter then forwarded those EVM addresses. WOWMAX's Stellar endpoint got
+`from=0xa0b8…` and returned a Cloudflare 502; their team added `invalid_asset`
+handling for a request we should never have sent.
+
+Two fixes, deliberately layered:
+
+1. **A generation counter** in `loadTokensFor()` — each call takes a sequence
+   number and does nothing if a newer switch has started. Fixes the cause.
+2. **An address-shape check** in [src/quotes/run.ts](src/quotes/run.ts), applied
+   once before the fan-out: an EVM `0x…` address on a non-EVM chain (or the
+   reverse) is rejected with one clear message and **zero upstream requests**.
+   A backstop, so any future state bug can't send malformed requests to 19 APIs.
+
 ### Stellar
 
 Added as a chain (`stellar`), and it is unlike every other entry: assets are not
@@ -593,6 +618,32 @@ half. 1Click covers exactly XLM and USDC there.
 Coverage is the widest of any source here — 35 chains including Bitcoin, XRP,
 Cardano, Dogecoin, TON, Tron, Stellar, Aptos, Sui and Starknet. On NEAR it is
 currently the **only** source that quotes at all.
+
+### Timeouts
+
+Four values, layered so the client is always the one that decides to give up:
+
+| Where | Value |
+|---|---|
+| per-source, in the runner | **30s** |
+| proxy → upstream fetch | 25s |
+| Vercel function `maxDuration` | 30s |
+| proxy health probe | 4s |
+
+The per-source timeout was 12s, which cut off WOWMAX at ~15s on a request that
+would have succeeded. Measured latency is normally **sub-second** (0.4–1.1s
+across Stellar and EVM pairs), so a slow response means a cold start or
+transient upstream slowness — the case worth waiting out.
+
+Waiting is cheap here because the fan-out is parallel and rows stream as they
+land: measured, the fastest source renders at ~190ms while the slowest finishes
+at ~2.2s. One slow source delays only its own row. The cost of cutting early is
+a missing quote that reads as a broken integration; the cost of waiting is a
+single pending row.
+
+The proxy's upstream fetch stays *below* the client timeout (25s < 30s) so the
+client, not the proxy, owns the decision — and `maxDuration` stays above its own
+fetch so the function isn't killed mid-request.
 
 ### Support gaps are not errors
 

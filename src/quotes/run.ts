@@ -18,7 +18,50 @@ import {
   type QuoteRequest,
 } from "./types.ts";
 
-const DEFAULT_TIMEOUT_MS = 12_000;
+/**
+ * Per-source timeout.
+ *
+ * Raised from 12s after WOWMAX was cut off around 15s and would have succeeded
+ * given longer. Measured latency is normally sub-second (0.4–1.1s across
+ * Stellar and EVM pairs), so a slow response means a cold start or transient
+ * upstream slowness — exactly the case worth waiting out rather than reporting
+ * as a timeout.
+ *
+ * 30s is the ceiling because the fan-out runs in parallel: one slow source
+ * delays only its own row, not the others, and rows render as they land. The
+ * cost of waiting is a single pending row; the cost of cutting early is a
+ * missing quote that looks like a broken integration.
+ */
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Reject a request whose token addresses don't match the chain's address format
+ * BEFORE any adapter sees it.
+ *
+ * This is a backstop for UI state getting out of sync — a chain-switch race
+ * once left "Stellar" selected with ETH/USDC `0x…` addresses, which every
+ * adapter then dutifully forwarded. WOWMAX surfaced it as a 502, and their
+ * team had to add error handling for a malformed request we should never have
+ * sent. Catching it here means one clear message instead of N confusing
+ * upstream errors, and no wasted requests.
+ */
+function addressShapeError(req: QuoteRequest): string | null {
+  const isEvmAddr = (a: string) => /^0x[a-fA-F0-9]{40}$/.test(a.trim());
+  const pair = [req.inToken, req.outToken];
+
+  if (req.chain.evm) {
+    const bad = pair.find((t) => !isEvmAddr(t.address));
+    return bad
+      ? `${bad.symbol} is not an EVM address — ${req.chain.name} expects 0x…`
+      : null;
+  }
+
+  // Non-EVM: an EVM-shaped address is always wrong here.
+  const bad = pair.find((t) => isEvmAddr(t.address));
+  return bad
+    ? `${bad.symbol} is an EVM address, but ${req.chain.name} is not EVM — reselect the token`
+    : null;
+}
 
 /** Compare outputs of possibly-different decimals on a common scale. */
 function toNumber(outAmount: string, decimals: number): number {
@@ -44,8 +87,25 @@ export async function compareQuotes(
     ? ADAPTERS.filter((a) => opts.only!.includes(a.id))
     : ADAPTERS;
 
+  // One shape check for the whole fan-out: a mismatched pair is a UI-state bug,
+  // not something any individual source can answer.
+  const shapeError = addressShapeError(req);
+
   const tasks = adapters.map(async (a): Promise<QuoteOutcome> => {
     const started = Date.now();
+
+    if (shapeError) {
+      const outcome: QuoteOutcome = {
+        ok: false,
+        source: a.id,
+        label: a.label,
+        kind: "unsupported",
+        message: shapeError,
+        ms: 0,
+      };
+      opts.onResult?.(outcome);
+      return outcome;
+    }
 
     // Cheap pre-flight: skip the network entirely when unsupported.
     const ok = a.supports(req);

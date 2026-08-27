@@ -4,7 +4,7 @@
   "outputDirectory": "public",
   "functions": {
     "api/proxy.ts": {
-      "maxDuration": 20
+      "maxDuration": 30
     }
   }
 }

@@ -132,10 +132,12 @@ async function handle(req: Request): Promise<Response> {
   }
 
   try {
-    // Bound the upstream call so a hanging API can't hold the function open.
+    // Bound the upstream call so a hanging API can't hold the function open —
+    // but keep it under vercel.json's maxDuration and above the client's own
+    // per-source timeout, so the client decides when to give up, not us.
     const upstream = await fetch(built.url, {
       headers: built.headers,
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(25_000),
     });
     const text = await upstream.text();
 

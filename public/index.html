@@ -879,7 +879,23 @@ function setBusy(busy) {
   }
 }
 
+/**
+ * Guards against overlapping chain switches.
+ *
+ * Without it, a slow load can finish AFTER a newer one and stamp its tokens
+ * over the current chain's — leaving e.g. chain "Stellar" with ETH/USDC `0x…`
+ * addresses selected. That then sends EVM addresses to a non-EVM endpoint,
+ * which is exactly the `invalid_asset` error WOWMAX reported. Token lists vary
+ * from instant (5 seeded for Stellar) to ~660 fetched entries, so the race is
+ * easy to hit by switching chains quickly.
+ */
+let tokenLoadSeq = 0;
+
 async function loadTokensFor(code) {
+  const seq = ++tokenLoadSeq;
+  /** True once a newer switch has started; this load must then do nothing. */
+  const stale = () => seq !== tokenLoadSeq;
+
   TOKENS = [];
   SEL.in = SEL.out = null;
   setBusy(true);
@@ -888,7 +904,9 @@ async function loadTokensFor(code) {
   setNote(`Loading tokens for <strong>${esc(code)}</strong>…`);
 
   try {
-    TOKENS = await OO.loadTokens(code);
+    const loaded = await OO.loadTokens(code);
+    if (stale()) return; // a newer chain switch owns the UI now
+    TOKENS = loaded;
 
     const native = TOKENS.find((t) => t.isNative);
     // Prefer USDC/USDT by name rather than taking the top-priced stablecoin —
@@ -906,11 +924,12 @@ async function loadTokensFor(code) {
         `${hot} popular · search by symbol, name or address.`,
     );
   } catch (err) {
+    if (stale()) return;
     setNote(`Could not load tokens: ${esc(err.message || err)}`, true);
   } finally {
-    // Re-enable only when a usable pair actually resolved, so a click can't
-    // race ahead of the token list.
-    setBusy(!(SEL.in && SEL.out));
+    // Only the newest load may touch the buttons; otherwise a stale one could
+    // re-enable them while the current chain is still loading.
+    if (!stale()) setBusy(!(SEL.in && SEL.out));
   }
 }
 
