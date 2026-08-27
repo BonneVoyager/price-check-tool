@@ -291,9 +291,16 @@ looking at:
 ?chain=eth&from=ETH&to=USDC&amount=2.5&slippage=0.5&gas=7&account=0x…
 ```
 
+Cross-chain adds `toChain`; everything else is identical:
+
+```
+?chain=eth&toChain=solana&from=ETH&to=USDC&amount=0.5
+```
+
 | Param | Notes |
 |---|---|
-| `chain` | our chain code (`eth`, `bsc`, `polygon_zkevm`, `stellar`) |
+| `chain` | **source** chain code (`eth`, `bsc`, `polygon_zkevm`, `stellar`) |
+| `toChain` | destination chain — omit for a same-chain swap |
 | `from` / `to` | **symbol or address** — `from=ETH` or `from=0x64aa…` |
 | `amount`, `slippage`, `gas` | numbers; `slippage` is percent, `gas` gwei |
 | `account` | optional, only used by `/swap` |
@@ -306,7 +313,9 @@ Design decisions worth knowing:
 - **`replaceState`, not `pushState`** — sharing a link shouldn't fill the back
   button with one entry per keystroke.
 - **Defaults are omitted.** A fresh page is `?chain=eth&from=ETH&to=USDC`, so a
-  shared link shows only what you actually changed.
+  shared link shows only what you actually changed. `toChain` is written only
+  when it differs from `chain`, so same-chain links are exactly as short as they
+  were before cross-chain existed — and old links without it still work.
 - **Symbols are preferred over addresses** for readability — except for an
   unlisted token, whose "symbol" is the placeholder `Custom token` and would
   resolve to nothing on reload, so those carry the address instead.
@@ -316,6 +325,67 @@ Design decisions worth knowing:
   garbage to 19 APIs. The URL then self-cleans.
 
 Works identically on both deployments — the logic is bundled, not server-side.
+
+---
+
+## Cross-chain
+
+Pick a different **To chain** and the same Compare button prices a bridge.
+`ETH` on Ethereum → `USDC` on Solana is one comparison, not a different mode.
+
+Three of the 19 sources bridge — **LI.FI**, **Relay** and **NEAR Intents**. The
+other 16 report `Same-chain only — cannot bridge` as a neutral support gap, the
+same treatment a chain they don't cover gets. Verified live in both directions
+across VMs (EVM→SVM, SVM→EVM, EVM→Stellar).
+
+### `chain` is an alias, not a third field
+
+`QuoteRequest` carries `fromChain` and `toChain`, and keeps `chain` as a derived
+alias for the source. That's deliberate: the 16 same-chain adapters and their
+~70 `req.chain` references needed no edit, and same-chain is simply
+`fromChain.code === toChain.code` rather than a flag that could disagree with
+the chains. `compareQuotes()` accepts either shape and normalises.
+
+The cross-chain gate runs *before* each adapter's own `supports()`, so a
+non-bridging source never issues a request it cannot serve.
+
+### Both token lists, both chains
+
+Token lists are per-side (`TOKENS.in` / `TOKENS.out`), each with **its own
+generation counter** — the two chains load concurrently and neither can
+invalidate the other. That matters because the earlier single-list race is what
+sent EVM addresses to a Stellar endpoint; here the two sides are structurally
+incapable of sharing a list.
+
+Flip swaps the two lists in memory rather than refetching, so reversing a
+cross-chain pair is instant.
+
+### The To chain follows the From chain — until you split them
+
+Changing the source chain also moves the destination **only while the two were
+in step**. So a same-chain switch stays one click, while a deliberate
+cross-chain pair is never silently collapsed. Once they match again, `toChain`
+drops back out of the URL.
+
+### Two placeholder bugs this surfaced
+
+Both only appear when the destination VM differs from the source, which is why
+same-chain testing never caught them:
+
+- **LI.FI** defaults `toAddress` to `fromAddress` when it's omitted, so an
+  EVM→Solana quote failed with `Invalid toAddress: 0x00…01`. Now set explicitly
+  per side, and a user-supplied account is only applied to the side whose VM
+  actually matches it.
+- **NEAR Intents** was sending the destination-format address as `refundTo`.
+  A direct probe of `/v0/quote` settled which side it belongs to: on
+  `eth → solana`, an EVM `refundTo` is accepted and a Solana one is rejected —
+  so `refundTo` follows the **origin** and only `recipient` follows the
+  destination. A comment in the file claimed both followed the destination; it
+  was wrong, and is now corrected.
+
+`/quote` and `/swap` are OpenOcean-only and single-chain, so they refuse a
+cross-chain pair outright and point at Compare instead of quoting the source
+chain and returning a price for a swap you didn't ask for.
 
 ---
 

@@ -104,7 +104,7 @@ h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.015em; }
 
 /* --- form layout --------------------------------------------------------- */
 .row { display: grid; gap: 14px; }
-.row.swap { grid-template-columns: 1fr auto 1fr; align-items: end; }
+.row.swap { grid-template-columns: 1fr auto 1fr; align-items: center; }
 .row.meta { grid-template-columns: repeat(3, 1fr); margin-top: 14px; }
 @media (max-width: 700px) {
   .row.swap { grid-template-columns: 1fr; }
@@ -113,6 +113,28 @@ h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: -.015em; }
 }
 
 .field { min-width: 0; }
+
+/* A swap side stacks its chain picker above its token picker, so From and To
+   are structurally identical — that symmetry is what makes cross-chain read as
+   one direction rather than a mode. */
+.side {
+  min-width: 0;
+  display: grid;
+  gap: 0;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 11px 11px 12px;
+}
+/* The nested pickers sit flush inside the side, so drop their own fill and
+   keep only the border — two stacked filled boxes inside a filled box reads as
+   noise. */
+.side .control { background: transparent; }
+.side .control:hover { background: var(--surface); }
+label.tight { margin-top: 10px; }
+/* The chain row is secondary to the token: same control, quieter. */
+.control.slim { height: 38px; }
+.control.slim .tk-sym { font-size: 13px; }
 label {
   display: block; font-size: 10.5px; font-weight: 600;
   text-transform: uppercase; letter-spacing: .07em;
@@ -161,7 +183,7 @@ input.control::placeholder { color: var(--text-faint); font-family: var(--sans);
 
 /* Flip button */
 .flip {
-  width: 34px; height: 34px; margin-bottom: 4px;
+  width: 34px; height: 34px;
   display: grid; place-items: center;
   background: var(--surface-2); border: 1px solid var(--line);
   border-radius: 9px; color: var(--text-dim); cursor: pointer;
@@ -487,39 +509,38 @@ summary:hover { color: var(--text); }
     <p class="lede">
       Compare swap quotes across aggregators, DEX routers and on-chain pools on
       one pair, side by side. <strong>Compare all sources</strong> fans the same
-      request out to every source that covers the chain and ranks what comes
-      back. The <code>/quote</code> and <code>/swap</code> buttons hit OpenOcean
-      directly, for inspecting one API's raw response.
+      request out to every source that covers the pair and ranks what comes
+      back. Pick a different <em>To chain</em> to price a cross-chain swap —
+      bridging sources answer, the rest sit out. The <code>/quote</code> and
+      <code>/swap</code> buttons hit OpenOcean directly (single-chain only), for
+      inspecting one API's raw response.
     </p>
   </header>
 
   <div class="card">
-    <div class="field" style="margin-bottom:14px; max-width:340px">
-      <label for="chainBtn">Chain</label>
-      <div class="pick" id="chainPick">
-        <button class="control" id="chainBtn" aria-haspopup="listbox" aria-expanded="false">
-          <span class="tk">
-            <span class="tk-ico" id="chainIco">&middot;</span>
-            <span class="tk-txt">
-              <span class="tk-sym" id="chainSym">&mdash;</span>
-              <span class="tk-sub" id="chainSub"></span>
-            </span>
-          </span>
-          <svg class="caret" width="11" height="11" viewBox="0 0 12 12" fill="none"
-               stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-            <path d="M3 4.5 6 7.5 9 4.5"/>
-          </svg>
-        </button>
-        <div class="pop" id="chainPop">
-          <div class="pop-search"><input id="chainQ" placeholder="Search chains&hellip;" autocomplete="off" /></div>
-          <div class="pop-list" id="chainList"></div>
-        </div>
-      </div>
-    </div>
-
     <div class="row swap">
-      <div class="field">
-        <label for="inBtn">From</label>
+      <div class="side">
+        <label for="chainBtn">From chain</label>
+        <div class="pick sub" id="chainPick">
+          <button class="control slim" id="chainBtn" aria-haspopup="listbox" aria-expanded="false">
+            <span class="tk">
+              <span class="tk-ico" id="chainIco">&middot;</span>
+              <span class="tk-txt">
+                <span class="tk-sym" id="chainSym">&mdash;</span>
+                <span class="tk-sub" id="chainSub"></span>
+              </span>
+            </span>
+            <svg class="caret" width="11" height="11" viewBox="0 0 12 12" fill="none"
+                 stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+              <path d="M3 4.5 6 7.5 9 4.5"/>
+            </svg>
+          </button>
+          <div class="pop" id="chainPop">
+            <div class="pop-search"><input id="chainQ" placeholder="Search chains&hellip;" autocomplete="off" /></div>
+            <div class="pop-list" id="chainList"></div>
+          </div>
+        </div>
+        <label for="inBtn" class="tight">Token</label>
         <div class="pick" id="inPick">
           <button class="control" id="inBtn" aria-haspopup="listbox" aria-expanded="false">
             <span class="tk">
@@ -550,8 +571,28 @@ summary:hover { color: var(--text); }
         </button>
       </div>
 
-      <div class="field">
-        <label for="outBtn">To</label>
+      <div class="side">
+        <label for="toChainBtn">To chain</label>
+        <div class="pick sub" id="toChainPick">
+          <button class="control slim" id="toChainBtn" aria-haspopup="listbox" aria-expanded="false">
+            <span class="tk">
+              <span class="tk-ico" id="toChainIco">&middot;</span>
+              <span class="tk-txt">
+                <span class="tk-sym" id="toChainSym">&mdash;</span>
+                <span class="tk-sub" id="toChainSub"></span>
+              </span>
+            </span>
+            <svg class="caret" width="11" height="11" viewBox="0 0 12 12" fill="none"
+                 stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+              <path d="M3 4.5 6 7.5 9 4.5"/>
+            </svg>
+          </button>
+          <div class="pop" id="toChainPop">
+            <div class="pop-search"><input id="toChainQ" placeholder="Search chains&hellip;" autocomplete="off" /></div>
+            <div class="pop-list" id="toChainList"></div>
+          </div>
+        </div>
+        <label for="outBtn" class="tight">Token</label>
         <div class="pick" id="outPick">
           <button class="control" id="outBtn" aria-haspopup="listbox" aria-expanded="false">
             <span class="tk">
@@ -628,10 +669,16 @@ summary:hover { color: var(--text); }
 import { OO } from "./app.js";
 const $ = (id) => document.getElementById(id);
 let CHAINS = [];
-let TOKENS = [];
+/**
+ * Token lists are per-side: a cross-chain swap has two chains, so `in` and
+ * `out` each search their own chain's list. On a same-chain swap both sides
+ * hold the same list.
+ */
+let TOKENS = { in: [], out: [] };
 /** code -> logo URL, resolved in the browser after first paint. */
 let CHAIN_ICONS = {};
-const SEL = { chain: null, in: null, out: null };
+/** `chain` is the SOURCE chain; `toChain` the destination. Equal = same-chain. */
+const SEL = { chain: null, toChain: null, in: null, out: null };
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -836,12 +883,13 @@ function customToken(addr) {
 }
 
 /** Rank: address hit, exact symbol, symbol prefix, symbol substring, then name. */
-function tokenItems(q) {
+function tokenItems(side, q) {
+  const list = TOKENS[side];
   const raw = q.trim();
   const v = raw.toUpperCase();
-  if (!v) return TOKENS.slice(0, 80);
+  if (!v) return list.slice(0, 80);
   const scored = [];
-  for (const t of TOKENS) {
+  for (const t of list) {
     const s = t.symbol.toUpperCase();
     const n = (t.name || "").toUpperCase();
     let k = -1;
@@ -865,6 +913,20 @@ function tokenItems(q) {
 const tokenGroups = (t, q) => (q.trim() ? null : t.isNative || t.isHot ? "Popular" : "All tokens");
 
 const pickers = {};
+
+/**
+ * The source chain as of the last pick, used to tell "the two chains were in
+ * step" from "the user split them on purpose". Without it, switching the source
+ * chain would either always drag the destination along (breaking a deliberate
+ * cross-chain pair) or never (making every same-chain switch two clicks).
+ */
+let prevFromChain = null;
+
+/** Repaint both chain triggers — icons resolve after first paint. */
+function repaintChains() {
+  if (SEL.chain) pickers.chain.set(SEL.chain);
+  if (SEL.toChain) pickers.toChain.set(SEL.toChain);
+}
 
 /* --- data loading --------------------------------------------------------- */
 
@@ -892,49 +954,53 @@ function setBusy(busy) {
  * from instant (5 seeded for Stellar) to ~660 fetched entries, so the race is
  * easy to hit by switching chains quickly.
  */
-let tokenLoadSeq = 0;
+const tokenLoadSeq = { in: 0, out: 0 };
 
-async function loadTokensFor(code, want) {
-  const seq = ++tokenLoadSeq;
-  /** True once a newer switch has started; this load must then do nothing. */
-  const stale = () => seq !== tokenLoadSeq;
+/**
+ * Load one side's token list.
+ *
+ * `side` is "in" or "out"; each side tracks its own generation counter, so the
+ * two chains can load concurrently without either invalidating the other.
+ */
+async function loadTokensFor(side, code, want) {
+  const seq = ++tokenLoadSeq[side];
+  /** True once a newer switch on THIS side has started; this load must stop. */
+  const stale = () => seq !== tokenLoadSeq[side];
 
-  TOKENS = [];
-  SEL.in = SEL.out = null;
+  TOKENS[side] = [];
+  SEL[side] = null;
   setBusy(true);
-  $("inSym").textContent = $("outSym").textContent = "…";
-  $("inSub").textContent = $("outSub").textContent = "";
+  $(`${side}Sym`).textContent = "…";
+  $(`${side}Sub`).textContent = "";
   setNote(`Loading tokens for <strong>${esc(code)}</strong>…`);
 
   try {
     const loaded = await OO.loadTokens(code);
-    if (stale()) return; // a newer chain switch owns the UI now
-    TOKENS = loaded;
+    if (stale()) return; // a newer chain switch owns this side now
+    TOKENS[side] = loaded;
 
-    const native = TOKENS.find((t) => t.isNative);
+    const native = loaded.find((t) => t.isNative);
     // Prefer USDC/USDT by name rather than taking the top-priced stablecoin —
     // they all sit at ~$1, so price order between them is arbitrary noise.
     const stable = ["USDC", "USDT", "DAI"]
-      .map((s) => TOKENS.find((t) => t.symbol.toUpperCase() === s && !t.isNative))
+      .map((sym) => loaded.find((t) => t.symbol.toUpperCase() === sym && !t.isNative))
       .find(Boolean);
-    const out = stable || TOKENS.find((t) => t.isHot && !t.isNative) || TOKENS[1];
+    // The From side defaults to the native token, the To side to a stablecoin —
+    // that's the reading everyone wants first ("what is my ETH worth").
+    const dflt = side === "in"
+      ? native
+      : stable || loaded.find((t) => t.isHot && !t.isNative) || loaded[1];
 
-    // A shared link's tokens win over the defaults, but only for this load —
-    // `want` is cleared by the caller so a later chain switch picks defaults.
-    pickers.in.set(tokenFromParam(want?.from) ?? native);
-    pickers.out.set(tokenFromParam(want?.to) ?? out);
-
-    const hot = TOKENS.filter((t) => t.isHot).length;
-    setNote(
-      `<strong>${TOKENS.length}</strong> tokens on <strong>${esc(code)}</strong> · ` +
-        `${hot} popular · search by symbol, name or address.`,
-    );
+    // A shared link's token wins over the default, but only for this load —
+    // `want` is not passed by a later chain switch, which picks defaults.
+    pickers[side].set(tokenFromParam(side, want) ?? dflt);
+    noteTokenCounts();
   } catch (err) {
     if (stale()) return;
     setNote(`Could not load tokens: ${esc(err.message || err)}`, true);
   } finally {
-    // Only the newest load may touch the buttons; otherwise a stale one could
-    // re-enable them while the current chain is still loading.
+    // Only the newest load on this side may touch the buttons; otherwise a
+    // stale one could re-enable them while a newer chain is still loading.
     if (!stale()) {
       setBusy(!(SEL.in && SEL.out));
       // Tokens changed asynchronously, so the URL is stale until now.
@@ -943,19 +1009,64 @@ async function loadTokensFor(code, want) {
   }
 }
 
+/** Load both sides for a same-chain pair, reusing one fetch for both. */
+async function loadBothFrom(code, want) {
+  await Promise.all([
+    loadTokensFor("in", code, want?.from),
+    loadTokensFor("out", code, want?.to),
+  ]);
+}
+
+/** One status line for both sides — two would be noise on a same-chain swap. */
+function noteTokenCounts() {
+  const a = SEL.chain, b = SEL.toChain;
+  if (!a || !b) return;
+  const n = (side) => TOKENS[side].length;
+  if (a.code === b.code) {
+    const hot = TOKENS.in.filter((t) => t.isHot).length;
+    setNote(
+      `<strong>${n("in")}</strong> tokens on <strong>${esc(a.code)}</strong> · ` +
+        `${hot} popular · search by symbol, name or address.`,
+    );
+  } else {
+    setNote(
+      `Cross-chain: <strong>${esc(a.name)}</strong> → <strong>${esc(b.name)}</strong> · ` +
+        `${n("in")} / ${n("out")} tokens · only bridging sources can quote this.`,
+    );
+  }
+}
+
 async function boot() {
+  // Picking a source chain reloads the From tokens. It also moves the
+  // destination when the two were in step, so a plain same-chain switch stays
+  // one click — the To chain only stays put once you've deliberately split it.
   pickers.chain = makePicker({
     key: "chain", wrap: "chainPick",
     getItems: chainItems, row: chainRow,
-    onPick: (c) => loadTokensFor(c.code),
+    onPick: (c) => {
+      const wasLinked = SEL.toChain?.code === prevFromChain?.code;
+      prevFromChain = c;
+      if (wasLinked && SEL.toChain?.code !== c.code) {
+        pickers.toChain.set(c);
+        loadBothFrom(c.code);
+      } else {
+        loadTokensFor("in", c.code);
+        noteTokenCounts();
+      }
+    },
+  });
+  pickers.toChain = makePicker({
+    key: "toChain", wrap: "toChainPick",
+    getItems: chainItems, row: chainRow,
+    onPick: (c) => loadTokensFor("out", c.code),
   });
   pickers.in = makePicker({
     key: "in", wrap: "inPick",
-    getItems: tokenItems, row: tokenRow, groups: tokenGroups,
+    getItems: (q) => tokenItems("in", q), row: tokenRow, groups: tokenGroups,
   });
   pickers.out = makePicker({
     key: "out", wrap: "outPick",
-    getItems: tokenItems, row: tokenRow, groups: tokenGroups,
+    getItems: (q) => tokenItems("out", q), row: tokenRow, groups: tokenGroups,
   });
 
   try {
@@ -967,7 +1078,9 @@ async function boot() {
     setNote(`Could not start: ${esc(err.message || err)}`, true);
     return;
   }
-  $("chainQ").placeholder = `Search ${CHAINS.length} chains…`;
+  for (const k of ["chainQ", "toChainQ"]) {
+    $(k).placeholder = `Search ${CHAINS.length} chains…`;
+  }
 
   // --- restore shared state from the URL --------------------------------
   const urlState = readUrlState();
@@ -993,11 +1106,14 @@ async function boot() {
 
   // Ethereum: the most-quoted chain (15 of 19 sources cover it), so the first
   // comparison a visitor runs is the most informative one.
-  const fromUrl = urlState.chain
-    ? CHAINS.find((c) => c.code === urlState.chain)
-    : undefined;
-  const start = fromUrl || CHAINS.find((c) => c.code === "eth") || CHAINS[0];
+  const byCode = (code) => (code ? CHAINS.find((c) => c.code === code) : undefined);
+  // `chain` is the legacy single-chain param and still names the source, so old
+  // links keep working; `toChain` is only present on a cross-chain link.
+  const start = byCode(urlState.chain) || CHAINS.find((c) => c.code === "eth") || CHAINS[0];
+  const dest = byCode(urlState.toChain) || start;
   pickers.chain.set(start);
+  pickers.toChain.set(dest);
+  prevFromChain = start;
 
   // Chain logos need a token list per chain, so fetch them alongside the first
   // token load rather than blocking the page. Initials show until they land.
@@ -1005,7 +1121,7 @@ async function boot() {
     // Built-in marks resolve instantly; the rest need that chain's token list,
     // so fetch them in small batches and repaint as they arrive.
     for (const c of CHAINS) if (OO.CHAIN_MARKS[c.code]) CHAIN_ICONS[c.code] = OO.CHAIN_MARKS[c.code];
-    if (SEL.chain) pickers.chain.set(SEL.chain);
+    repaintChains();
 
     const rest = CHAINS.filter((c) => !CHAIN_ICONS[c.code]);
     for (let i = 0; i < rest.length; i += 6) {
@@ -1018,13 +1134,15 @@ async function boot() {
         }),
       );
     }
-    if (SEL.chain) pickers.chain.set(SEL.chain);
+    repaintChains();
   })().catch(() => {});
 
   await Promise.all([
-    loadTokensFor(start.code, { from: urlState.from, to: urlState.to }),
+    loadTokensFor("in", start.code, urlState.from),
+    loadTokensFor("out", dest.code, urlState.to),
     icons,
   ]);
+  noteTokenCounts();
 
   // From here the URL follows the UI. Written after restore so a half-applied
   // state is never persisted.
@@ -1172,6 +1290,20 @@ async function callApi(endpoint, withAccount) {
 
 async function call(endpoint, withAccount) {
   const out = $("out");
+
+  // OpenOcean's /quote and /swap are single-chain: both token addresses go to
+  // one chain endpoint. Quoting the source chain anyway would return a price
+  // for a swap the user didn't ask for, so refuse and point at Compare, which
+  // does have bridging sources.
+  if (endpoint !== "gasPrice" && SEL.chain && SEL.toChain && SEL.chain.code !== SEL.toChain.code) {
+    out.innerHTML = `<div class="card"><div class="err">
+      <strong>OpenOcean's ${esc(endpoint)} is single-chain.</strong>
+      ${esc(SEL.chain.name)} → ${esc(SEL.toChain.name)} needs a bridge —
+      use <em>Compare all sources</em>, which includes LI.FI, Relay and NEAR Intents.
+    </div></div>`;
+    return;
+  }
+
   out.innerHTML = `<div class="card"><div class="loading"><span class="spin"></span>Calling ${esc(endpoint)}…</div></div>`;
 
   try {
@@ -1262,7 +1394,7 @@ async function call(endpoint, withAccount) {
    =========================================================================== */
 
 /** Params we own. Anything else in the URL is left untouched. */
-const URL_KEYS = ["chain", "from", "to", "amount", "slippage", "gas", "account"];
+const URL_KEYS = ["chain", "toChain", "from", "to", "amount", "slippage", "gas", "account"];
 
 function readUrlState() {
   const p = new URLSearchParams(location.search);
@@ -1281,7 +1413,7 @@ function readUrlState() {
  * URL, and only the parts you actually changed show up in a shared link.
  */
 function syncUrl() {
-  if (!SEL.chain) return;
+  if (!SEL.chain || !SEL.toChain) return;
   const p = new URLSearchParams(location.search);
   const set = (k, v, dflt) => {
     if (v === undefined || v === null || v === "" || v === dflt) p.delete(k);
@@ -1289,6 +1421,9 @@ function syncUrl() {
   };
 
   set("chain", SEL.chain.code, null);
+  // Only written when the swap actually crosses chains, so a same-chain link
+  // stays as short as it was before cross-chain existed.
+  set("toChain", SEL.toChain && SEL.toChain.code !== SEL.chain.code ? SEL.toChain.code : "", "");
   // Prefer the symbol — a shared link reads better as from=ETH than an address.
   // But an unlisted token's "symbol" is the placeholder label "Custom token",
   // which resolves to nothing on reload, so those must carry the address.
@@ -1314,9 +1449,9 @@ function syncUrl() {
  * list doesn't carry — the same synthetic "unlisted" entry the picker offers,
  * so a link to an arbitrary address survives a round trip.
  */
-function tokenFromParam(value) {
+function tokenFromParam(side, value) {
   if (!value) return undefined;
-  const hit = OO.resolveToken(TOKENS, value);
+  const hit = OO.resolveToken(TOKENS[side], value);
   if (hit) return hit;
   if (looksLikeAddress(value)) return customToken(value);
   return undefined;
@@ -1390,8 +1525,8 @@ function cmpRowFailure(f) {
 
 async function compareAll() {
   const out = $("out");
-  if (!SEL.chain || !SEL.in || !SEL.out) {
-    out.innerHTML = `<div class="card"><div class="err"><strong>Pick a chain and both tokens first.</strong></div></div>`;
+  if (!SEL.chain || !SEL.toChain || !SEL.in || !SEL.out) {
+    out.innerHTML = `<div class="card"><div class="err"><strong>Pick both chains and both tokens first.</strong></div></div>`;
     return;
   }
   const amount = $("amount").value.trim();
@@ -1401,7 +1536,8 @@ async function compareAll() {
   }
 
   const req = {
-    chain: SEL.chain,
+    fromChain: SEL.chain,
+    toChain: SEL.toChain,
     inToken: SEL.in,
     outToken: SEL.out,
     amount,
@@ -1526,7 +1662,20 @@ $("btnSwap").onclick = () => call("swap", true);
 $("btnGas").onclick = () => call("gasPrice", false);
 $("flip").onclick = () => {
   const a = SEL.in, b = SEL.out;
-  if (a && b) { pickers.in.set(b); pickers.out.set(a); syncUrl(); }
+  if (!a || !b) return;
+  const ca = SEL.chain, cb = SEL.toChain;
+  // Cross-chain: the token lists belong to their chains, so swap the lists
+  // along with the selections instead of re-fetching both.
+  if (ca && cb && ca.code !== cb.code) {
+    [TOKENS.in, TOKENS.out] = [TOKENS.out, TOKENS.in];
+    pickers.chain.set(cb);
+    pickers.toChain.set(ca);
+    prevFromChain = cb;
+  }
+  pickers.in.set(b);
+  pickers.out.set(a);
+  noteTokenCounts();
+  syncUrl();
 };
 
 boot();

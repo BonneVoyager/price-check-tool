@@ -13,10 +13,27 @@
 
 import { ADAPTERS } from "./adapters.ts";
 import {
+  isCrossChain,
   NoRouteError,
   type QuoteOutcome,
   type QuoteRequest,
 } from "./types.ts";
+
+/** What a caller may pass: either the full triple, or just `chain`. */
+export type QuoteRequestInput = Omit<QuoteRequest, "chain" | "fromChain" | "toChain"> &
+  Partial<Pick<QuoteRequest, "chain" | "fromChain" | "toChain">>;
+
+/**
+ * Fill in the chain triple so `chain`, `fromChain` and `toChain` are always
+ * consistent. Callers can pass `chain` alone (same-chain, the common case) or
+ * `fromChain`/`toChain` for a bridge; `chain` always mirrors the source.
+ */
+function normalise(input: QuoteRequestInput): QuoteRequest {
+  const from = input.fromChain ?? input.chain;
+  const to = input.toChain ?? input.fromChain ?? input.chain;
+  if (!from || !to) throw new Error("A chain (or fromChain/toChain) is required");
+  return { ...input, chain: from, fromChain: from, toChain: to } as QuoteRequest;
+}
 
 /**
  * Per-source timeout.
@@ -47,20 +64,25 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  */
 function addressShapeError(req: QuoteRequest): string | null {
   const isEvmAddr = (a: string) => /^0x[a-fA-F0-9]{40}$/.test(a.trim());
-  const pair = [req.inToken, req.outToken];
 
-  if (req.chain.evm) {
-    const bad = pair.find((t) => !isEvmAddr(t.address));
-    return bad
-      ? `${bad.symbol} is not an EVM address — ${req.chain.name} expects 0x…`
-      : null;
+  // Each token is checked against its OWN chain — cross-chain means the two
+  // sides can legitimately have different address formats (ETH `0x…` in,
+  // Stellar `CODE:ISSUER` out).
+  const sides: [{ address: string; symbol: string }, typeof req.fromChain][] = [
+    [req.inToken, req.fromChain],
+    [req.outToken, req.toChain],
+  ];
+
+  for (const [token, chain] of sides) {
+    const evmShaped = isEvmAddr(token.address);
+    if (chain.evm && !evmShaped) {
+      return `${token.symbol} is not an EVM address — ${chain.name} expects 0x…`;
+    }
+    if (!chain.evm && evmShaped) {
+      return `${token.symbol} is an EVM address, but ${chain.name} is not EVM — reselect the token`;
+    }
   }
-
-  // Non-EVM: an EVM-shaped address is always wrong here.
-  const bad = pair.find((t) => isEvmAddr(t.address));
-  return bad
-    ? `${bad.symbol} is an EVM address, but ${req.chain.name} is not EVM — reselect the token`
-    : null;
+  return null;
 }
 
 /** Compare outputs of possibly-different decimals on a common scale. */
@@ -79,9 +101,10 @@ export interface CompareOptions {
 }
 
 export async function compareQuotes(
-  req: QuoteRequest,
+  input: QuoteRequestInput,
   opts: CompareOptions = {},
 ): Promise<QuoteOutcome[]> {
+  const req = normalise(input);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const adapters = opts.only
     ? ADAPTERS.filter((a) => opts.only!.includes(a.id))
@@ -101,6 +124,21 @@ export async function compareQuotes(
         label: a.label,
         kind: "unsupported",
         message: shapeError,
+        ms: 0,
+      };
+      opts.onResult?.(outcome);
+      return outcome;
+    }
+
+    // A cross-chain request is meaningless to a same-chain source; say so up
+    // front rather than letting each adapter quote the wrong thing.
+    if (isCrossChain(req) && !a.crossChain) {
+      const outcome: QuoteOutcome = {
+        ok: false,
+        source: a.id,
+        label: a.label,
+        kind: "unsupported",
+        message: "Same-chain only — cannot bridge",
         ms: 0,
       };
       opts.onResult?.(outcome);

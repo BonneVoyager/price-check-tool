@@ -98,14 +98,21 @@ try {
     }
 
     case "compare": {
+      // --toChain makes it a cross-chain comparison; without it both sides use
+      // --chain, so existing invocations behave exactly as before.
+      const toCode = args.toChain ?? chain;
       const chainInfo = findChain(chain);
+      const toChainInfo = findChain(toCode);
       if (!chainInfo) throw new Error(`Unknown chain "${chain}"`);
+      if (!toChainInfo) throw new Error(`Unknown chain "${toCode}"`);
+      // Each token resolves against ITS OWN chain's list.
       const inTok = await resolve(chain, args.in ?? "");
-      const outTok = await resolve(chain, args.out ?? "");
+      const outTok = await resolve(toCode, args.out ?? "");
       const amount = args.amount ?? "1";
 
       const results = await compareQuotes({
-        chain: chainInfo,
+        fromChain: chainInfo,
+        toChain: toChainInfo,
         inToken: { address: inTok.address, decimals: inTok.decimals ?? 18, symbol: (inTok as any).symbol ?? args.in ?? "" },
         outToken: { address: outTok.address, decimals: outTok.decimals ?? 18, symbol: (outTok as any).symbol ?? args.out ?? "" },
         amount,
@@ -114,7 +121,11 @@ try {
         account: args.account,
       });
 
-      console.log(`\n  ${amount} ${args.in} → ${args.out} on ${chainInfo.name}`);
+      console.log(
+        chainInfo.code === toChainInfo.code
+          ? `\n  ${amount} ${args.in} → ${args.out} on ${chainInfo.name}`
+          : `\n  ${amount} ${args.in} (${chainInfo.name}) → ${args.out} (${toChainInfo.name})`,
+      );
       console.log(`  ${"─".repeat(58)}`);
       for (const r of cmpRank(results)) {
         const tag = r.rank === 1 ? "★" : " ";
@@ -207,6 +218,7 @@ try {
     bun run swap   -- --chain eth --in ETH --out USDC --amount 1 --account 0xYourAddress
     bun run tokens -- --chain eth [--filter USD] [--limit 50]
     bun run compare -- --chain eth --in ETH --out USDC --amount 1
+    bun run compare -- --chain eth --toChain solana --in ETH --out USDC   # cross-chain
     bun run chains
     bun run gas    -- --chain eth
 

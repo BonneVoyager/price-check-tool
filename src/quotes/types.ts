@@ -84,7 +84,20 @@ export type QuoteOutcome =
 
 /** What the UI asks for. Amounts are human-readable at this boundary. */
 export interface QuoteRequest {
+  /**
+   * Source chain.
+   *
+   * `chain` is kept as an alias for `fromChain` so the 17 same-chain adapters
+   * (and 70+ `req.chain` references) work unchanged — rewriting them all to
+   * support a feature only 3 sources have would be a large, risky diff for no
+   * behavioural gain. Same-chain is simply `fromChain === toChain`, which is
+   * how `isCrossChain()` decides, so there is no parallel code path.
+   */
   chain: ChainInfo;
+  /** Source chain — same object as `chain`. */
+  fromChain: ChainInfo;
+  /** Destination chain. Equal to `fromChain` for a same-chain swap. */
+  toChain: ChainInfo;
   inToken: { address: string; decimals: number; symbol: string };
   outToken: { address: string; decimals: number; symbol: string };
   /** Human-readable, e.g. "1.5". Adapters convert as their API requires. */
@@ -97,9 +110,20 @@ export interface QuoteRequest {
   account?: string;
 }
 
+/** True when the request bridges chains rather than swapping within one. */
+export function isCrossChain(req: QuoteRequest): boolean {
+  return req.fromChain.code !== req.toChain.code;
+}
+
 export interface QuoteAdapter {
   id: string;
   label: string;
+  /**
+   * Set on the three sources that can bridge (LI.FI, Relay, NEAR Intents).
+   * The runner rejects a cross-chain request for everything else up front, so
+   * a same-chain adapter never has to think about it.
+   */
+  crossChain?: boolean;
   /** Short note for the UI: what this source is, in a few words. */
   blurb: string;
   /**

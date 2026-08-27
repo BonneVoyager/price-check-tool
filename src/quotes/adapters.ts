@@ -445,32 +445,42 @@ const lifi: QuoteAdapter = {
   id: "lifi",
   label: "LI.FI",
   blurb: "Meta-aggregator, also bridges cross-chain",
+  crossChain: true,
 
   supports(req) {
-    if (!req.chain.evm && !LIFI_NON_EVM[req.chain.code]) {
-      return `${req.chain.name} not covered`;
-    }
-    if (req.chain.evm && req.chain.id == null) {
-      return `${req.chain.name} has no chain id`;
+    // Both ends must be addressable, since either may be the bridge target.
+    for (const c of [req.fromChain, req.toChain]) {
+      if (!c.evm && !LIFI_NON_EVM[c.code]) return `${c.name} not covered`;
+      if (c.evm && c.id == null) return `${c.name} has no chain id`;
     }
     return true;
   },
 
   async quote(req, signal) {
     const fromAmount = toBaseUnits(req.amount, req.inToken.decimals);
-    const chainId = LIFI_NON_EVM[req.chain.code] ?? req.chain.id ?? undefined;
-    // fromAddress must match the chain's VM — an EVM address on Solana is
-    // rejected outright.
-    const fallbackAddr = req.chain.evm ? ZERO_ADDR : SOL_PLACEHOLDER;
+    const fromId = LIFI_NON_EVM[req.fromChain.code] ?? req.fromChain.id ?? undefined;
+    const toId = LIFI_NON_EVM[req.toChain.code] ?? req.toChain.id ?? undefined;
+    // fromAddress must match the SOURCE chain's VM — an EVM address on Solana
+    // is rejected outright. toAddress follows the DESTINATION's, and LI.FI
+    // defaults it to fromAddress when omitted, which breaks any EVM->non-EVM
+    // bridge ("Invalid toAddress: 0x00...01"). So set it explicitly per side.
+    const fallbackAddr = req.fromChain.evm ? ZERO_ADDR : SOL_PLACEHOLDER;
+    const toFallback = req.toChain.evm ? ZERO_ADDR : SOL_PLACEHOLDER;
+    // A user-supplied account is only valid on a side whose VM matches it, so
+    // keep the placeholder for the other side rather than reusing it blindly.
+    const accountIsEvm = /^0x[0-9a-fA-F]{40}$/.test(req.account ?? "");
     const url =
       `https://li.quest/v1/quote?` +
       qs({
-        fromChain: chainId,
-        toChain: chainId,
+        fromChain: fromId,
+        toChain: toId,
         fromToken: req.inToken.address,
         toToken: req.outToken.address,
         fromAmount,
-        fromAddress: req.account || fallbackAddr,
+        fromAddress:
+          (accountIsEvm === req.fromChain.evm ? req.account : "") || fallbackAddr,
+        toAddress:
+          (accountIsEvm === req.toChain.evm ? req.account : "") || toFallback,
         slippage: Number(req.slippage || "1") / 100,
       });
 
@@ -782,44 +792,46 @@ const relay: QuoteAdapter = {
   id: "relay",
   label: "Relay",
   blurb: "Cross-chain router (same-chain too)",
+  crossChain: true,
 
   supports(req) {
-    if (!req.chain.evm && !RELAY_NON_EVM[req.chain.code]) {
-      return `${req.chain.name} not covered`;
-    }
-    if (req.chain.evm && req.chain.id == null) {
-      return `${req.chain.name} has no chain id`;
+    for (const c of [req.fromChain, req.toChain]) {
+      if (!c.evm && !RELAY_NON_EVM[c.code]) return `${c.name} not covered`;
+      if (c.evm && c.id == null) return `${c.name} has no chain id`;
     }
     return true;
   },
 
   async quote(req, signal) {
     const url = "https://api.relay.link/quote";
-    const chainId = RELAY_NON_EVM[req.chain.code] ?? req.chain.id;
-    // Native sentinel -> Relay's per-chain native address. EVM uses the zero
-    // address; Solana uses 32 "1"s (its System Program id).
-    const nativeAddr =
-      RELAY_NATIVE[req.chain.code] ?? "0x0000000000000000000000000000000000000000";
-    const isNativeFor = (addr: string) =>
+    const originId = RELAY_NON_EVM[req.fromChain.code] ?? req.fromChain.id;
+    const destId = RELAY_NON_EVM[req.toChain.code] ?? req.toChain.id;
+    // Native sentinel -> Relay's per-chain native address, resolved per SIDE:
+    // EVM uses the zero address, Solana 32 "1"s (its System Program id).
+    const nativeFor = (c: typeof req.fromChain) =>
+      RELAY_NATIVE[c.code] ?? "0x0000000000000000000000000000000000000000";
+    const isNativeFor = (addr: string, c: typeof req.fromChain) =>
       isNativeSentinel(addr) ||
-      (!req.chain.evm && addr.toLowerCase().startsWith("so1111"));
+      (!c.evm && addr.toLowerCase().startsWith("so1111"));
 
-    // `user` must be an address on the origin chain's VM.
+    // `user` is on the ORIGIN chain; `recipient` on the destination, which may
+    // be a different VM entirely.
     const user =
-      req.account || (req.chain.evm ? PLACEHOLDER_TAKER : SOL_PLACEHOLDER);
+      req.account || (req.fromChain.evm ? PLACEHOLDER_TAKER : SOL_PLACEHOLDER);
+    const recipient = req.toChain.evm ? PLACEHOLDER_TAKER : SOL_PLACEHOLDER;
 
     const json = await postJson(
       url,
       {
         user,
-        recipient: user,
-        originChainId: chainId,
-        destinationChainId: chainId,
-        originCurrency: isNativeFor(req.inToken.address)
-          ? nativeAddr
+        recipient: req.account || recipient,
+        originChainId: originId,
+        destinationChainId: destId,
+        originCurrency: isNativeFor(req.inToken.address, req.fromChain)
+          ? nativeFor(req.fromChain)
           : req.inToken.address,
-        destinationCurrency: isNativeFor(req.outToken.address)
-          ? nativeAddr
+        destinationCurrency: isNativeFor(req.outToken.address, req.toChain)
+          ? nativeFor(req.toChain)
           : req.outToken.address,
         amount: toBaseUnits(req.amount, req.inToken.decimals),
         tradeType: "EXACT_INPUT",
@@ -966,8 +978,9 @@ const fibrous: QuoteAdapter = {
 const ONECLICK_BASE = "https://1click.chaindefuser.com/v0";
 
 /**
- * 1Click validates `recipient`/`refundTo` against the DESTINATION chain's
- * address format, so an EVM address on Solana fails with "recipient is not
+ * 1Click validates `recipient` against the DESTINATION chain's address format
+ * (and `refundTo` against the ORIGIN's), so an EVM address on Solana fails with
+ * "recipient is not
  * valid". These are well-known public addresses used purely as quote
  * placeholders — `dry: true` means nothing is ever sent to them.
  */
@@ -1099,20 +1112,27 @@ const nearIntents: QuoteAdapter = {
   id: "near-intents",
   label: "NEAR Intents",
   blurb: "1Click solver network, 35 chains",
+  crossChain: true,
 
   supports(req) {
-    if (!ONECLICK_CHAINS[req.chain.code]) return `${req.chain.name} not covered`;
+    for (const c of [req.fromChain, req.toChain]) {
+      if (!ONECLICK_CHAINS[c.code]) return `${c.name} not covered`;
+    }
     return true;
   },
 
   async quote(req, signal) {
-    const chainKey = ONECLICK_CHAINS[req.chain.code]!;
+    // Each side resolves against ITS OWN chain — that's what makes bridging work.
+    const fromKey = ONECLICK_CHAINS[req.fromChain.code]!;
+    const toKey = ONECLICK_CHAINS[req.toChain.code]!;
     const assets = await loadOneClickAssets(signal);
 
-    const from = findOneClickAsset(assets, chainKey, req.inToken);
-    const to = findOneClickAsset(assets, chainKey, req.outToken);
+    const from = findOneClickAsset(assets, fromKey, req.inToken);
+    const to = findOneClickAsset(assets, toKey, req.outToken);
     if (!from || !to) {
       const missing = !from ? req.inToken.symbol : req.outToken.symbol;
+      const missingChain = !from ? req.fromChain : req.toChain;
+      const chainKey = !from ? fromKey : toKey;
       // "not in the registry" rather than "not bridgeable": 1Click's asset list
       // is volatile — it went from 186 assets to 98 between two runs, dropping
       // USDC from Solana (7 assets left) and from Stellar (1 left) entirely.
@@ -1126,16 +1146,17 @@ const nearIntents: QuoteAdapter = {
       throw new NoRouteError(
         assets.length < 20
           ? `NEAR Intents' asset registry is degraded (${assets.length} assets total) — try again later`
-          : `${missing} not in NEAR Intents' list for ${req.chain.name} (${listed} listed there)`,
+          : `${missing} not in NEAR Intents' list for ${missingChain.name} (${listed} listed there)`,
       );
     }
     if (from.assetId === to.assetId) throw new NoRouteError("Same asset both sides");
 
-    // Recipient must match the destination chain's address format.
+    // Recipient must match the DESTINATION chain's address format; refundTo the
+    // origin's. On a same-chain swap these are the same thing.
     const taker =
-      req.account ||
-      ONECLICK_PLACEHOLDER[chainKey] ||
-      PLACEHOLDER_TAKER;
+      req.account || ONECLICK_PLACEHOLDER[toKey] || PLACEHOLDER_TAKER;
+    const refundTo =
+      req.account || ONECLICK_PLACEHOLDER[fromKey] || PLACEHOLDER_TAKER;
     // Deadline must be in the future; 30 min is well inside any quote's life.
     const deadline = new Date(Date.now() + 30 * 60_000).toISOString();
 
@@ -1150,14 +1171,16 @@ const nearIntents: QuoteAdapter = {
           // Stellar deposits are identified by transaction memo, not a unique
           // address, and 1Click rejects SIMPLE for a stellar origin outright
           // ("Incorrect depositMode for originAsset from stellar chain").
-          depositMode: chainKey === "stellar" ? "MEMO" : "SIMPLE",
+          depositMode: fromKey === "stellar" ? "MEMO" : "SIMPLE",
           swapType: "EXACT_INPUT",
           slippageTolerance: Math.round(Number(req.slippage || "1") * 100),
           originAsset: from.assetId,
           depositType: "ORIGIN_CHAIN",
           destinationAsset: to.assetId,
           amount: toBaseUnits(req.amount, from.decimals),
-          refundTo: taker,
+          // Origin-chain format, verified by probe: an EVM refundTo on an
+          // eth->solana quote is accepted while a Solana one is rejected.
+          refundTo,
           refundType: "ORIGIN_CHAIN",
           recipient: taker,
           recipientType: "DESTINATION_CHAIN",
