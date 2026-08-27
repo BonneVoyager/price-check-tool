@@ -514,11 +514,47 @@ Two Stellar aggregators exist. Only one is usable without registration:
 
   Two things to know about its wire format: it answers **HTTP 201**, not 200,
   and it addresses assets by **Soroban contract id** (`C…`) rather than the
-  `CODE:ISSUER` form the rest of Stellar uses — so `SOROSWAP_CONTRACTS` maps the
-  two. Only XLM/USDC/AQUA are mapped; other assets report no known contract id
-  rather than guessing.
+  `CODE:ISSUER` form the rest of Stellar uses. See below.
 
 Measured: 100 XLM → 17.993 USDC from both, agreeing to 6 decimals.
+
+#### Deriving Soroban contract ids
+
+Soroswap rejects the classic `CODE:ISSUER` form outright (`Invalid Stellar
+address`), so it needs a contract id. This was originally a hand-written table
+of three assets, which meant **7 of the 10 seeded Stellar assets — and every
+pasted one — failed** with "No Soroban contract id known for this asset" without
+a request ever being made.
+
+Its own `/api/tokens` can't fill the gap: the endpoint exists and returns 200,
+but the **mainnet** asset list is empty (only testnet is populated).
+
+The fix is that these ids aren't arbitrary. Every classic asset has a
+deterministic Stellar Asset Contract address — `SHA-256` of an XDR preimage —
+so [src/quotes/soroban.ts](src/quotes/soroban.ts) computes it for *any* asset
+and the table is gone. StrKey is base32 + CRC16-XModem, short enough to
+implement directly rather than add `@stellar/stellar-base` as a dependency.
+
+The preimage is `ENVELOPE_TYPE_CONTRACT_ID · networkID ·
+CONTRACT_ID_PREIMAGE_FROM_ASSET · asset`. The value worth calling out is
+`ENVELOPE_TYPE_CONTRACT_ID = **8**` — my first attempt assumed 2 (which is
+`ENVELOPE_TYPE_TX`) and produced well-formed, checksum-valid, entirely wrong
+ids. That failure mode is why the implementation is pinned to three test
+vectors whose ids were already known good:
+
+| Asset | Contract id |
+|---|---|
+| `native` | `CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA` |
+| `USDC:GA5ZSE…` | `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75` |
+| `AQUA:GBNZIL…` | `CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK` |
+
+Also note the code length picks the union arm: ≤4 chars is `ALPHANUM4`, longer
+is `ALPHANUM12`, so 5-character codes like `PYUSD` take the 12-byte padding.
+
+Verified against the live API after the change — XLM→USDC/EURC/AQUA/yXLM/XRP/
+SHX/BTC/PYUSD all quote, where all but USDC previously refused. A pasted `C…`
+id passes through unchanged, and malformed input is still rejected in
+`supports()` before any request goes out.
 
 ### Source-kind tags
 

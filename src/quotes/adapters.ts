@@ -12,6 +12,7 @@
 
 import { CHAINS, type ChainInfo } from "../chains.ts";
 import { ENSO_API_KEY, SOROSWAP_API_KEY, ZEROX_API_KEY } from "./keys.ts";
+import { contractIdForAsset, isStellarAsset } from "./soroban.ts";
 import { proxyAvailable, proxyUrl } from "./proxy.ts";
 import { getQuote, toBaseUnits } from "../openocean.ts";
 import {
@@ -1880,15 +1881,6 @@ const wowmax: QuoteAdapter = {
 // form WOWMAX and the rest of Stellar use, so a small mapping table is needed.
 // ---------------------------------------------------------------------------
 
-/** Soroban contract ids for the Stellar assets we seed, keyed by CODE:ISSUER. */
-const SOROSWAP_CONTRACTS: Record<string, string> = {
-  native: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
-  "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN":
-    "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
-  "AQUA:GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA":
-    "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK",
-};
-
 const soroswap: QuoteAdapter = {
   id: "soroswap",
   label: "Soroswap",
@@ -1899,15 +1891,25 @@ const soroswap: QuoteAdapter = {
     if (!SOROSWAP_API_KEY) {
       return "Set SOROSWAP_API_KEY — free key from api.soroswap.finance/login";
     }
-    const a = SOROSWAP_CONTRACTS[req.inToken.address];
-    const b = SOROSWAP_CONTRACTS[req.outToken.address];
-    if (!a || !b) return "No Soroban contract id known for this asset";
+    // Any classic asset works now that the contract id is derived rather than
+    // looked up, so this only rejects genuinely malformed input.
+    if (!isStellarAsset(req.inToken.address)) {
+      return `${req.inToken.symbol} is not a classic Stellar asset`;
+    }
+    if (!isStellarAsset(req.outToken.address)) {
+      return `${req.outToken.symbol} is not a classic Stellar asset`;
+    }
     return true;
   },
 
   async quote(req, signal) {
-    const assetIn = SOROSWAP_CONTRACTS[req.inToken.address]!;
-    const assetOut = SOROSWAP_CONTRACTS[req.outToken.address]!;
+    // Soroswap only accepts Soroban contract ids; the classic CODE:ISSUER form
+    // is rejected as "Invalid Stellar address". Its /api/tokens list is empty
+    // for mainnet, so derive the id instead of looking it up. See soroban.ts.
+    const [assetIn, assetOut] = await Promise.all([
+      contractIdForAsset(req.inToken.address),
+      contractIdForAsset(req.outToken.address),
+    ]);
     const url = "https://api.soroswap.finance/quote?network=mainnet";
 
     const json = await postJson(

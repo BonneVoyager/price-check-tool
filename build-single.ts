@@ -68,9 +68,16 @@ if (!MODULE_OPEN.test(html)) {
   process.exit(1);
 }
 
+// A replacement FUNCTION, not a string: String.replace expands `$&`, `$1`,
+// "$`" etc. inside a string replacement, and a minified bundle can legitimately
+// contain those sequences (a `$&` in a regex literal is enough). As a string
+// this silently re-injected the matched `import … "./app.js"` line into the
+// output — which the sanity check below then caught. A function receives the
+// replacement verbatim, so there is nothing to expand.
 const single = html.replace(
   MODULE_OPEN,
-  `<script>\n/* --- inlined bundle (bun build) --- */\n${js}\n/* --- app --- */\nconst OO = window.OO;`,
+  () =>
+    `<script>\n/* --- inlined bundle (bun build) --- */\n${js}\n/* --- app --- */\nconst OO = window.OO;`,
 );
 
 // Sanity: nothing should still point at the sibling file.
