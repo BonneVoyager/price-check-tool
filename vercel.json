@@ -4,7 +4,6 @@
   "outputDirectory": "public",
   "functions": {
     "api/proxy.ts": {
-      "runtime": "@vercel/node@5",
       "maxDuration": 20
     }
   }

@@ -96,7 +96,16 @@ function json(body: unknown, status: number) {
   });
 }
 
-export default async function handler(req: Request): Promise<Response> {
+/**
+ * Web-standard handler.
+ *
+ * Vercel's Node runtime expects EITHER an object with a `fetch` method (the Web
+ * Standard export) or a Node-style `(req, res)` function — a bare
+ * `export default function(req: Request)` is read as the latter and breaks at
+ * runtime, because `req` arrives as an IncomingMessage, not a Request.
+ * So the logic lives in `handle` and is exported as `{ fetch }`.
+ */
+async function handle(req: Request): Promise<Response> {
   // Preflight — some callers send one even for a simple GET.
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS });
@@ -148,3 +157,10 @@ export default async function handler(req: Request): Promise<Response> {
     return json({ error: `Upstream request failed: ${msg}` }, 502);
   }
 }
+
+export default { fetch: handle };
+
+// Also export named HTTP methods, which Vercel accepts, so the shape is
+// unambiguous regardless of which convention the runtime picks up.
+export const GET = handle;
+export const OPTIONS = handle;
