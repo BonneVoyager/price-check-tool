@@ -606,6 +606,16 @@ async function postJson(
 // CoW Swap — intent/batch-auction based, so its number includes a solver fee.
 // ---------------------------------------------------------------------------
 
+/**
+ * CoW's per-network API slugs. NOT our chain codes: `xdai`→`xdai`,
+ * `arbitrum`→`arbitrum_one`, `avax`→`avalanche`.
+ *
+ * BNB Chain is deliberately absent — CoW has no deployment there, and
+ * `api.cow.fi/bsc/...` returns an HTML 404 (its `/version` endpoint 404s too).
+ * Listing it produced a red "Non-JSON response (HTTP 404)" error on every BSC
+ * comparison, which looked like a broken integration rather than a chain CoW
+ * simply doesn't serve. Each slug below was verified with a live quote.
+ */
 const COW_CHAINS: Record<string, string> = {
   eth: "mainnet",
   xdai: "xdai",
@@ -613,7 +623,6 @@ const COW_CHAINS: Record<string, string> = {
   base: "base",
   polygon: "polygon",
   avax: "avalanche",
-  bsc: "bsc",
 };
 
 const cow: QuoteAdapter = {
