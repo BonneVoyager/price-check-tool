@@ -743,6 +743,9 @@ function makePicker({ key, wrap, getItems, row, groups, onPick }) {
     paint(it);
     close();
     onPick?.(it);
+    // A user pick changes shareable state. `set()` deliberately doesn't call
+    // this — it's used during restore and by flip, which sync explicitly.
+    syncUrl();
   };
 
   el.btn.addEventListener("click", (e) => { e.preventDefault(); isOpen ? close() : open(); });
@@ -891,7 +894,7 @@ function setBusy(busy) {
  */
 let tokenLoadSeq = 0;
 
-async function loadTokensFor(code) {
+async function loadTokensFor(code, want) {
   const seq = ++tokenLoadSeq;
   /** True once a newer switch has started; this load must then do nothing. */
   const stale = () => seq !== tokenLoadSeq;
@@ -915,8 +918,11 @@ async function loadTokensFor(code) {
       .map((s) => TOKENS.find((t) => t.symbol.toUpperCase() === s && !t.isNative))
       .find(Boolean);
     const out = stable || TOKENS.find((t) => t.isHot && !t.isNative) || TOKENS[1];
-    pickers.in.set(native);
-    pickers.out.set(out);
+
+    // A shared link's tokens win over the defaults, but only for this load —
+    // `want` is cleared by the caller so a later chain switch picks defaults.
+    pickers.in.set(tokenFromParam(want?.from) ?? native);
+    pickers.out.set(tokenFromParam(want?.to) ?? out);
 
     const hot = TOKENS.filter((t) => t.isHot).length;
     setNote(
@@ -929,7 +935,11 @@ async function loadTokensFor(code) {
   } finally {
     // Only the newest load may touch the buttons; otherwise a stale one could
     // re-enable them while the current chain is still loading.
-    if (!stale()) setBusy(!(SEL.in && SEL.out));
+    if (!stale()) {
+      setBusy(!(SEL.in && SEL.out));
+      // Tokens changed asynchronously, so the URL is stale until now.
+      syncUrl();
+    }
   }
 }
 
@@ -958,9 +968,35 @@ async function boot() {
     return;
   }
   $("chainQ").placeholder = `Search ${CHAINS.length} chains…`;
+
+  // --- restore shared state from the URL --------------------------------
+  const urlState = readUrlState();
+
+  // Scalars first: they need no async work, and applying them before the token
+  // load means a shared link never flashes the defaults.
+  //
+  // Numerics are validated rather than trusted: a hand-edited or truncated link
+  // (`amount=abc`) would otherwise be forwarded to 19 APIs as-is. An invalid
+  // value falls back to the field's default instead of failing the page.
+  const num = (v, dflt) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? String(v).trim() : dflt;
+  };
+  if (urlState.amount) $("amount").value = num(urlState.amount, "1");
+  if (urlState.slippage) $("slippage").value = num(urlState.slippage, "1");
+  if (urlState.gas) $("gasPrice").value = num(urlState.gas, "3");
+  // Accounts vary by chain (0x…, Stellar G…, Solana base58), so only reject
+  // something that clearly isn't an address rather than guessing a format.
+  if (urlState.account && urlState.account.length >= 20) {
+    $("account").value = urlState.account.trim();
+  }
+
   // Ethereum: the most-quoted chain (15 of 19 sources cover it), so the first
   // comparison a visitor runs is the most informative one.
-  const start = CHAINS.find((c) => c.code === "eth") || CHAINS[0];
+  const fromUrl = urlState.chain
+    ? CHAINS.find((c) => c.code === urlState.chain)
+    : undefined;
+  const start = fromUrl || CHAINS.find((c) => c.code === "eth") || CHAINS[0];
   pickers.chain.set(start);
 
   // Chain logos need a token list per chain, so fetch them alongside the first
@@ -985,7 +1021,17 @@ async function boot() {
     if (SEL.chain) pickers.chain.set(SEL.chain);
   })().catch(() => {});
 
-  await Promise.all([loadTokensFor(start.code), icons]);
+  await Promise.all([
+    loadTokensFor(start.code, { from: urlState.from, to: urlState.to }),
+    icons,
+  ]);
+
+  // From here the URL follows the UI. Written after restore so a half-applied
+  // state is never persisted.
+  syncUrl();
+  for (const id of ["amount", "slippage", "gasPrice", "account"]) {
+    $(id).addEventListener("change", syncUrl);
+  }
 }
 
 /* --- API calls ------------------------------------------------------------ */
@@ -1202,6 +1248,81 @@ async function call(endpoint, withAccount) {
 }
 
 /* ===========================================================================
+   Shareable URL state.
+
+   The URL is a REFLECTION of the pickers, never a second source of truth: it is
+   read once at boot and rewritten (via replaceState, so no history spam) after
+   any change. That ordering matters — writing it during restore would race the
+   async token load and persist half-applied state.
+
+   ?chain=eth&from=ETH&to=USDC&amount=1&slippage=1&gas=3&account=0x…
+
+   `from`/`to` accept a symbol OR an address, so links stay readable
+   (`from=ETH`) while still working for unlisted tokens (`from=0x64aa…`).
+   =========================================================================== */
+
+/** Params we own. Anything else in the URL is left untouched. */
+const URL_KEYS = ["chain", "from", "to", "amount", "slippage", "gas", "account"];
+
+function readUrlState() {
+  const p = new URLSearchParams(location.search);
+  const out = {};
+  for (const k of URL_KEYS) {
+    const v = p.get(k);
+    if (v !== null && v !== "") out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Rewrite the query string from current state.
+ *
+ * Omits values equal to the defaults so a freshly-loaded page keeps a clean
+ * URL, and only the parts you actually changed show up in a shared link.
+ */
+function syncUrl() {
+  if (!SEL.chain) return;
+  const p = new URLSearchParams(location.search);
+  const set = (k, v, dflt) => {
+    if (v === undefined || v === null || v === "" || v === dflt) p.delete(k);
+    else p.set(k, v);
+  };
+
+  set("chain", SEL.chain.code, null);
+  // Prefer the symbol — a shared link reads better as from=ETH than an address.
+  // But an unlisted token's "symbol" is the placeholder label "Custom token",
+  // which resolves to nothing on reload, so those must carry the address.
+  const ref = (t) => (!t ? undefined : t.isCustom ? t.address : t.symbol);
+  set("from", ref(SEL.in), null);
+  set("to", ref(SEL.out), null);
+  set("amount", $("amount").value.trim(), "1");
+  set("slippage", $("slippage").value.trim(), "1");
+  set("gas", $("gasPrice").value.trim(), "3");
+  set("account", $("account").value.trim(), "");
+
+  const qs = p.toString();
+  const next = location.pathname + (qs ? `?${qs}` : "") + location.hash;
+  // replaceState: sharing a link shouldn't fill the back button with every
+  // keystroke.
+  history.replaceState(null, "", next);
+}
+
+/**
+ * Resolve a `from`/`to` param against the loaded token list.
+ *
+ * Symbol first (that's what we write), then address, then — for a token the
+ * list doesn't carry — the same synthetic "unlisted" entry the picker offers,
+ * so a link to an arbitrary address survives a round trip.
+ */
+function tokenFromParam(value) {
+  if (!value) return undefined;
+  const hit = OO.resolveToken(TOKENS, value);
+  if (hit) return hit;
+  if (looksLikeAddress(value)) return customToken(value);
+  return undefined;
+}
+
+/* ===========================================================================
    Multi-source comparison.
 
    Rows stream in as each aggregator answers, so one slow API never holds up the
@@ -1405,7 +1526,7 @@ $("btnSwap").onclick = () => call("swap", true);
 $("btnGas").onclick = () => call("gasPrice", false);
 $("flip").onclick = () => {
   const a = SEL.in, b = SEL.out;
-  if (a && b) { pickers.in.set(b); pickers.out.set(a); }
+  if (a && b) { pickers.in.set(b); pickers.out.set(a); syncUrl(); }
 };
 
 boot();

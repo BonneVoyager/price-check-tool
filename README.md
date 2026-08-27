@@ -282,6 +282,43 @@ only, because a `localhost` Referer is rejected; see
 
 ---
 
+## Shareable links
+
+Every input is in the query string, so a link reproduces exactly what you're
+looking at:
+
+```
+?chain=eth&from=ETH&to=USDC&amount=2.5&slippage=0.5&gas=7&account=0x…
+```
+
+| Param | Notes |
+|---|---|
+| `chain` | our chain code (`eth`, `bsc`, `polygon_zkevm`, `stellar`) |
+| `from` / `to` | **symbol or address** — `from=ETH` or `from=0x64aa…` |
+| `amount`, `slippage`, `gas` | numbers; `slippage` is percent, `gas` gwei |
+| `account` | optional, only used by `/swap` |
+
+Design decisions worth knowing:
+
+- **The URL reflects the UI; it is never a second source of truth.** Read once at
+  boot, rewritten after any change. Writing during restore would race the async
+  token load and persist half-applied state.
+- **`replaceState`, not `pushState`** — sharing a link shouldn't fill the back
+  button with one entry per keystroke.
+- **Defaults are omitted.** A fresh page is `?chain=eth&from=ETH&to=USDC`, so a
+  shared link shows only what you actually changed.
+- **Symbols are preferred over addresses** for readability — except for an
+  unlisted token, whose "symbol" is the placeholder `Custom token` and would
+  resolve to nothing on reload, so those carry the address instead.
+- **Bad input falls back rather than failing.** `?chain=notachain&from=NOPE`
+  loads Ethereum with defaults; `amount=abc`, `slippage=-5` and `gas=0` are
+  rejected (non-numeric or non-positive) so a truncated link can't forward
+  garbage to 19 APIs. The URL then self-cleans.
+
+Works identically on both deployments — the logic is bundled, not server-side.
+
+---
+
 ## Comparing aggregators
 
 **Compare all sources** fans one request out to every adapter and ranks the
