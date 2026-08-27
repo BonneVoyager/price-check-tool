@@ -12,6 +12,7 @@
 
 import { CHAINS, type ChainInfo } from "../chains.ts";
 import { ENSO_API_KEY, SOROSWAP_API_KEY, ZEROX_API_KEY } from "./keys.ts";
+import { proxyAvailable, proxyUrl } from "./proxy.ts";
 import { getQuote, toBaseUnits } from "../openocean.ts";
 import {
   NoRouteError,
@@ -222,11 +223,39 @@ const openocean: QuoteAdapter = {
         }
       }
 
+      // Second fallback: the server-side proxy. Same origin on the Vercel
+      // deployment, cross-origin from GitHub Pages. If it's unreachable this
+      // stays null and the source reports itself unavailable — Pages keeps
+      // working with the other 18 sources.
+      if (!proxied && (await proxyAvailable())) {
+        try {
+          const res = await fetch(
+            proxyUrl("openocean", {
+              chain: req.chain.code,
+              endpoint: "quote",
+              in: req.inToken.address,
+              out: req.outToken.address,
+              amount: req.amount,
+              gasPrice: params.gasPrice,
+              slippage: params.slippage,
+            }),
+            { signal },
+          );
+          if (res.ok) {
+            const body = (await res.json()) as Record<string, any>;
+            // The proxy passes the upstream envelope through untouched.
+            if (body?.code === 200 && body.data) proxied = body.data;
+          }
+        } catch {
+          // Proxy down mid-request; fall through to the message below.
+        }
+      }
+
       if (!proxied) {
         throw new NoRouteError(
           isLocal || isFile
             ? "OpenOcean's WAF blocks local origins — run `bun run dev` to proxy it"
-            : `OpenOcean's WAF blocks this origin (${host}) — needs a proxy or an allowlisted domain`,
+            : `OpenOcean's WAF blocks this origin (${host}) and the proxy is unreachable`,
         );
       }
       d = proxied;
@@ -1245,12 +1274,13 @@ const ZEROX_CHAINS = new Set([1, 56, 137, 42161, 10, 8453, 43114, 59144, 534352,
 const zerox: QuoteAdapter = {
   id: "zerox",
   label: "0x",
-  blurb: "Server-side only (no CORS)",
+  blurb: "No CORS — via proxy in the browser",
 
   supports(req) {
-    if (typeof window !== "undefined") {
-      return "0x blocks browser requests (no CORS) — CLI only";
-    }
+    // In a browser this only works through the proxy (0x sends no CORS at all),
+    // but whether the proxy is up is an async question — so allow it here and
+    // let quote() report unavailability. That keeps supports() synchronous and
+    // side-effect free, which the runner relies on.
     if (!req.chain.evm) return `${req.chain.name} is not EVM`;
     if (req.chain.id == null || !ZEROX_CHAINS.has(req.chain.id)) {
       return `${req.chain.name} not covered`;
@@ -1259,24 +1289,45 @@ const zerox: QuoteAdapter = {
   },
 
   async quote(req, signal) {
-    const key = ZEROX_API_KEY;
-    if (!key) throw new NoRouteError("Set ZEROX_API_KEY in .env to use 0x");
+    const inBrowser = typeof window !== "undefined";
+    const params = {
+      chainId: req.chain.id ?? undefined,
+      sellToken: req.inToken.address,
+      buyToken: req.outToken.address,
+      sellAmount: toBaseUnits(req.amount, req.inToken.decimals),
+      taker: req.account || PLACEHOLDER_TAKER,
+      slippageBps: Math.round(Number(req.slippage || "1") * 100),
+    };
 
-    const url =
-      `https://api.0x.org/swap/allowance-holder/price?` +
-      qs({
-        chainId: req.chain.id ?? undefined,
-        sellToken: req.inToken.address,
-        buyToken: req.outToken.address,
-        sellAmount: toBaseUnits(req.amount, req.inToken.decimals),
-        taker: req.account || PLACEHOLDER_TAKER,
-        slippageBps: Math.round(Number(req.slippage || "1") * 100),
-      });
+    let json: Record<string, any>;
+    let url: string;
 
-    const { json } = await getJson(url, signal, {
-      "0x-api-key": key,
-      "0x-version": "v2",
-    });
+    if (inBrowser) {
+      // `api.0x.org` sends no access-control-allow-origin, so the browser can
+      // never call it directly however valid the key. The proxy holds the key
+      // server-side, which also keeps it out of the bundle.
+      if (!(await proxyAvailable())) {
+        throw new NoRouteError("0x needs the proxy (no CORS) — proxy unreachable");
+      }
+      url = proxyUrl("zerox", params as Record<string, string | number | undefined>);
+      const res = await fetch(url, { signal });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new NoRouteError(body?.error ?? `proxy returned ${res.status}`);
+      }
+      json = (await res.json()) as Record<string, any>;
+    } else {
+      // CLI: no CORS to worry about, call it directly with the local key.
+      const key = ZEROX_API_KEY;
+      if (!key) throw new NoRouteError("Set ZEROX_API_KEY in .env to use 0x");
+      url =
+        `https://api.0x.org/swap/allowance-holder/price?` + qs(params);
+      json = (await getJson(url, signal, {
+        "0x-api-key": key,
+        "0x-version": "v2",
+      })).json;
+    }
+
     if (!json.buyAmount) {
       throw new NoRouteError(json.reason ?? json.message ?? "no route");
     }

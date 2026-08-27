@@ -1,5 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "bun run build",
-  "outputDirectory": "public"
+  "outputDirectory": "public",
+  "functions": {
+    "api/proxy.ts": {
+      "runtime": "@vercel/node@5",
+      "maxDuration": 20
+    }
+  }
 }

@@ -638,6 +638,61 @@ calldata that this tool doesn't make.
 
 ---
 
+## Two deployments, one optional proxy
+
+| | URL | Role |
+|---|---|---|
+| **Vercel** | `openocean-playground.vercel.app` | hosts `/api/proxy` **and** uses it |
+| **GitHub Pages** | `bonnevoyager.github.io/price-check-tool/` | static; uses Vercel's proxy *if reachable* |
+
+Two sources cannot be called from a browser at all, for different reasons:
+
+- **OpenOcean** — its Cloudflare rule is an **origin allowlist**. `vercel.app`
+  is on it; `github.io` and `localhost` are not, and no client-side header
+  changes that.
+- **0x** — `api.0x.org` sends no `access-control-allow-origin` whatsoever, so a
+  browser fetch fails however valid the key.
+
+[api/proxy.ts](api/proxy.ts) fixes both with a server-side hop: it sets the
+`Referer` a browser may not set, holds the 0x key server-side, and returns CORS
+headers so a cross-origin page can read the reply.
+
+**Pages degrades gracefully by design.** [src/quotes/proxy.ts](src/quotes/proxy.ts)
+probes the proxy once (4s timeout, cached 60s). If it answers, both sources
+quote; if it doesn't, they report themselves unavailable and the other 18 quote
+exactly as before. Verified both ways:
+
+```
+proxy up   → 11 sources quoting, including 0x (a first for the browser)
+proxy down → 9 sources quoting; OpenOcean and 0x say "proxy unreachable"
+```
+
+So if the Vercel side ever disappears, Pages keeps working — no redeploy, no
+code change.
+
+### Security notes
+
+The proxy is a **strict allowlist, not an open relay**: `target` selects from a
+fixed table (`openocean`, `zerox`) and only named params are forwarded. Passing
+an arbitrary URL is rejected — an open proxy on a public URL would be abused.
+
+It also **improves** key handling: `ZEROX_API_KEY` now lives only in Vercel's
+env vars, so it is no longer in the browser bundle at all (verified: 0
+occurrences in both `public/app.js` and `dist/index.html`).
+
+### Deploying it
+
+The function needs one env var on Vercel:
+
+```
+ZEROX_API_KEY = <your 0x key>
+```
+
+Set it under **Settings → Environment Variables**. Without it the `zerox` target
+returns a clear error and the source sits out; everything else is unaffected.
+
+---
+
 ## Single file / GitHub Pages
 
 ```bash
