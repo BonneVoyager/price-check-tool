@@ -556,37 +556,44 @@ SHX/BTC/PYUSD all quote, where all but USDC previously refused. A pasted `C…`
 id passes through unchanged, and malformed input is still rejected in
 `supports()` before any request goes out.
 
-#### Soroswap picks the wrong SDEX path on large trades
+#### Soroswap's quotes collapse on large trades — our key can't reach Aqua
 
-Not our bug, but worth knowing before trusting its number on a big order.
+Not our bug, and **not** Soroswap's routing either. Worth knowing before
+trusting its number on a big order.
 
 100,000 `USDC` → `PYUSD` returns **4.20** from Soroswap against **59,305** from
-WOWMAX. The two agree to four decimals at 20,000 (19992.1555 vs 19992.1554), so
-this is size-dependent, not a mapping error.
+WOWMAX. Soroswap's *own app* quotes **99,899** for the same pair, which rules
+out both a mapping error here and bad routing there.
 
-Querying Stellar Horizon's `strict-send` endpoint directly — no Soroswap in the
-path — shows why:
+The difference is the API key. Their frontend proxies through
+`app.soroswap.finance/api/quote` with a server-side key, and that route reaches
+an Aqua **stable** pool holding ~4.03M USDC / ~3.99M PYUSD — ample depth, 0.00%
+price impact. Sending a byte-identical body to `api.soroswap.finance/quote` with
+our key returns `No path found` for Aqua at every size.
 
-| | destination_amount | hops |
-|---|---|---|
-| `record[0]` | 3,184.07 | 1 (via XLM) |
-| `record[1]` | **4.1998** | 0 (direct) |
+Two things make this concrete:
 
-Soroswap returns `record[1]`. The **direct** USDC/PYUSD order book holds only
-about 4 PYUSD of depth, so above ~20,000 it flatlines — 50k, 80k and 100k all
-return ~4.199, an output that ignores the input size entirely. WOWMAX routes via
-XLM and keeps scaling. Soroswap's `rawTrade` is Horizon's own response, which
-confirms it is faithfully reporting the worse of the two paths rather than
-mis-parsing anything.
+- `GET /pools?network=mainnet&protocol=aqua` **does** list the pool for our key,
+  so it is indexed and visible. It just isn't routable.
+- Our key ignores the `protocols` filter entirely. Asking for `["aqua"]` comes
+  back `routePlan[0].swapInfo.protocol === "soroswap"`; asking for all four
+  settles on `sdex`. It never returns an `aqua` route for any pair we tried.
+
+Falling back to SDEX is what produces the bad number: the **direct**
+USDC/PYUSD order book holds only ~4 PYUSD, so past ~20,000 the quote stops
+responding to input size at all — 50k, 80k and 100k all return ~4.199. Below
+that it is fine, and matches WOWMAX to four decimals at 20,000
+(19992.1555 vs 19992.1554).
 
 Its `priceImpactPct` is unusable at these sizes too (2,381,986 for the 100k
 quote), so the ranking ignores it.
 
-The UI now names this rather than averaging it in: when the best and worst
-quotes differ by 10x or more, `outlierWarning()` says "Soroswap returned 14,121x
-less than WOWMAX" and **omits** the percentages, because "+99.993% over" and a
-"1411967% spread" read like a bug in the tool. Below 10x, the normal spread is
-shown as before.
+Their proxy is origin-locked (`QUOTE_ERROR_CORS` server-to-server), so it is not
+an option to borrow — the real fix is a key with Aqua routing enabled. Until
+then, `outlierWarning()` flags any 10x+ gap as a source that "could not reach
+the pool holding the liquidity" and **omits** the percentages, because
+"+99.993% over" and a "1411967% spread" read like a bug in the tool. Below 10x,
+the normal spread is shown as before.
 
 ### Source-kind tags
 

@@ -1619,15 +1619,19 @@ function dustWarning(ranked) {
  * Warn when one source is so far off the pack that the percentages stop meaning
  * anything.
  *
- * Real case: 100,000 USDC -> PYUSD on Stellar. Soroswap returned 4.20 against
+ * Real case: 100,000 USDC -> PYUSD on Stellar. Soroswap returns 4.20 against
  * WOWMAX's 59,305, which renders as "+99.993% over" and a "1411967% spread" —
- * numbers that read like a bug in the tool. They aren't: Horizon offers two
- * paths at that size and Soroswap takes the DIRECT one, whose order book holds
- * only ~4 PYUSD of depth, while WOWMAX routes via XLM. Both agree to the cent
- * at 20,000, where the direct book still has depth.
+ * numbers that read like a bug in the tool.
  *
- * So the outlier is a real quote, but averaging it into a "spread" invites the
- * wrong conclusion. Name it instead.
+ * The cause is our API key, not Soroswap's routing: their own app quotes 99,899
+ * for the same pair via an Aqua `stable` pool holding ~4M of each asset. Our key
+ * never routes through Aqua at all — requesting `protocols: ["aqua"]` comes back
+ * routed via `soroswap`, so the filter is ignored and it settles on the SDEX
+ * order book, whose DIRECT USDC/PYUSD book holds only ~4 PYUSD. Hence a quote
+ * that ignores input size: 50k, 80k and 100k all return ~4.199.
+ *
+ * So the number is real but unusable, and the pair is not actually illiquid.
+ * Flag it as a source limitation rather than implying the market is thin.
  */
 function outlierWarning(ranked) {
   if (ranked.length < 2) return "";
@@ -1643,8 +1647,9 @@ function outlierWarning(ranked) {
       : `${ratio.toFixed(1)}x less`;
   return `<div class="v-meta" style="color:var(--amber)">
     ${esc(worst.outcome.label)} returned ${factor} than ${esc(best.outcome.label)}
-    — at this size that is usually a routing gap on a thin venue, not a real
-    price. Percentages against it would be meaningless, so they are omitted.
+    — that usually means it could not reach the pool holding the liquidity and
+    fell back to a near-empty venue, not that the price is real. Percentages
+    against it would be meaningless, so they are omitted.
   </div>`;
 }
 
