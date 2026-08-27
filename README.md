@@ -348,26 +348,55 @@ EVM→Stellar).
 | ParaSwap (Velora) | `GET api.velora.xyz/v2/quote` | **no** | CORS-open, no proxy needed |
 | WOWMAX | `POST …/crosschain/v0/bridge/quote` | no | eth/bsc/stellar only; **symbols**, not addresses |
 
-Ruled out after checking, so the "same-chain only" label is accurate rather
-than merely unexamined:
+Ruled out after probing each one live, so the "same-chain only" label is an
+examined verdict rather than an assumption. The 12:
 
-- **CoW Protocol** — SDK-only. Its `BridgingSdk` calls Across/Bungee/NEAR
-  Intents client-side; the orderbook OpenAPI spec has no bridge endpoint and
-  `api.cow.fi/…/bridge/*` 404s. Adding it would mean taking a dependency.
-- **Uniswap** and **DODO** — both have REST cross-chain endpoints, but they are
-  key-gated (401 `Unauthenticated api key`, 401 `Missing API key`) and we have
-  no key for either.
-- **KyberSwap**, **ParaSwap's legacy `/prices`** — accept a destination-chain
-  param and simply ignore it, returning a same-chain "route not found".
-- **Jupiter**, **AVNU**, **Soroswap** — their apps show a Bridge tab, but it
-  embeds a third party (deBridge, NEAR Intents, Allbridge Core) rather than
-  exposing a bridge quote of their own.
-- **Bebop**, **Balancer**, **Sushi**, **Fibrous** — no cross-chain REST API.
-- **OpenOcean** — markets cross-chain aggregation, but every documented v4
-  endpoint takes a single chain in the path. An undocumented `/v1/cross/quote`
-  exists and validates its schema, then returns `code: 500 "quote error"` for
-  every field combination tried. Their docs site is now an SPA 404ing every
-  deep path, so this stays UNCONFIRMED rather than guessed at.
+- **CoW Protocol** — SDK-only. `BridgingSdk` calls Across/Bungee/NEAR Intents
+  client-side; the orderbook OpenAPI spec has no bridge endpoint and
+  `api.cow.fi/bridging/*`, `api.cow.fi/…/v1/bridging/quote` and
+  `bff.cow.fi/bridge/*` all 404. Using it would mean taking a dependency.
+- **Uniswap** — `POST trade-api.gateway.uniswap.org/v1/quote` accepts
+  `tokenInChainId`/`tokenOutChainId` and does route cross-chain, but returns
+  `401 Unauthenticated api key or session` with or without app-origin headers.
+  Hard-gated; we have no key.
+- **DODO** — `POST api.dodoex.io/cross-chain/routes` exists (401 without a key,
+  and the public widget key gets past auth to a parameter error) but with
+  parameters supplied it returns **403 Forbidden**: the widget key is not
+  entitled to cross-chain. Their app also now redirects `/cross-chain` to
+  same-chain `/swap` and shows only Swap/Limit tabs.
+- **OpenOcean** — **confirmed negative**, previously unconfirmed. Every v4
+  endpoint takes one chain in the path; `/v4/cross/quote` rejects every chain
+  spelling; and the legacy `/v1/cross/quote` (whose schema still validates
+  `terra1…` addresses, dating it to the Terra era) returns
+  `code: 500 "quote error"` for every input — including a deliberately bogus
+  `exChange`, which a working endpoint would have rejected differently. Their
+  live app redirects `/cross-chain-swap` to same-chain swap and exposes no
+  cross-chain link at all.
+- **KyberSwap** — their app aggregates third-party bridges, but the documented
+  aggregator API has no cross-chain parameter (confirmed against the API
+  reference), `destChainId` is ignored, and no `crosschain-*.kyberswap.com`
+  host resolves.
+- **Sushi** — `toChainId` on `/swap/v7` is silently ignored: the request fails
+  with `Token 0x8335…913 is invalid` because it validated Base USDC against
+  chain 1. SushiXSwap is a contract/SDK product with no public quote REST API.
+- **AVNU** — accepts `destinationChainId` and ignores it; the response still
+  reports `chainId: SN_MAIN` and the amount barely moves.
+- **Balancer** — settled by GraphQL introspection rather than guesswork: the
+  schema's only routing field is `sorGetSwapPaths`, whose args include a single
+  `chain`. No cross-chain field exists.
+- **Bebop** — `/crosschain/*` and `/bridge/*` 404; `/pmm/chains` lists 8 chains
+  it serves independently.
+- **Jupiter** — Solana-only; an EVM `outputMint` is rejected as unparseable. Its
+  UI bridge embeds deBridge.
+- **Fibrous** — `/crosschain/route` 404s; per-chain routes only.
+- **Soroswap** — has a Bridge tab, but `/bridge/quote`, `/bridge/routes` and
+  `/bridge/chains` all 404; its `/protocols` lists only same-chain venues. The
+  UI bridge embeds Allbridge Core.
+
+Where an aggregator's app shows a Bridge tab but its API exposes none, the tab
+embeds a third party (Jupiter → deBridge, AVNU → NEAR Intents, Soroswap →
+Allbridge Core). Pointing at the upstream provider would be a new source, not
+that aggregator's route.
 
 A cross-chain win is sometimes the same underlying route a dedicated source
 already quotes — 0x aggregates `relay` and `near_intents`, Velora chose `Relay`
