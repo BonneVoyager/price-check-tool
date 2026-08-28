@@ -1110,7 +1110,7 @@ calldata that this tool doesn't make.
 
 | | URL | Role |
 |---|---|---|
-| **Vercel** | `openocean-playground.vercel.app` | hosts `/api/proxy` **and** uses it |
+| **Vercel** | `price-routing-tool.vercel.app` | hosts `/api/proxy` **and** uses it |
 | **GitHub Pages** | `bonnevoyager.github.io/price-check-tool/` | static; uses Vercel's proxy *if reachable* |
 
 Two sources cannot be called from a browser at all, for different reasons:
@@ -1137,6 +1137,12 @@ proxy down → 9 sources quoting; OpenOcean and 0x say "proxy unreachable"
 
 So if the Vercel side ever disappears, Pages keeps working — no redeploy, no
 code change.
+
+**One thing to keep in sync:** the Pages build reaches the proxy by absolute URL
+(`REMOTE_PROXY` in [src/quotes/proxy.ts](src/quotes/proxy.ts)), so a rename of
+the Vercel project has to be reflected there. The Vercel deployment itself is
+unaffected — it calls `/api/proxy` on its own origin — which means a stale value
+breaks **only** Pages, and does so silently.
 
 ### Security notes
 
@@ -1275,6 +1281,7 @@ Measured from real deployed origins:
 | Origin | `/quote` | `gasPrice`, `tokenList` |
 |---|---|---|
 | `openocean-playground.vercel.app` | **200** | 200 |
+| `price-routing-tool.vercel.app` | **200** | 200 |
 | `bonnevoyager.github.io` (https!) | **403** | 200 |
 | `http://localhost` | **403** | 200 |
 | `file://` | **403** | 200 |

@@ -13,7 +13,7 @@
  */
 
 /** The public Vercel deployment that hosts the proxy. */
-const REMOTE_PROXY = "https://openocean-playground.vercel.app/api/proxy";
+const REMOTE_PROXY = "https://price-routing-tool.vercel.app/api/proxy";
 
 /** How long to wait for the health probe before giving up on the proxy. */
 const PROBE_TIMEOUT_MS = 4000;
