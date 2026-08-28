@@ -85,6 +85,36 @@ export const CHAINS: ChainInfo[] = [
   { code: "aptos", name: "Aptos", id: null, nativeSymbol: "APT", evm: false },
   { code: "near", name: "NEAR", id: null, nativeSymbol: "NEAR", evm: false },
   /**
+   * TON. Addresses are base64url jetton addresses (`EQ…`/`UQ…`), nothing like
+   * EVM or the other non-EVM formats, so `evm: false` keeps EVM-keyed adapters
+   * out via supports(). Added for STON.fi and swap.coffee.
+   */
+  { code: "ton", name: "TON", id: null, nativeSymbol: "TON", evm: false },
+  /**
+   * Bitcoin. No smart contracts and no token addresses at all — it exists here
+   * purely so Chainflip (which bridges native BTC) has a chain to attach to.
+   * Only the native coin is meaningful, so the seed list has one entry.
+   */
+  { code: "bitcoin", name: "Bitcoin", id: null, nativeSymbol: "BTC", evm: false },
+  /**
+   * UTXO / non-smart-contract chains, plus Tron and Cardano. Each carries only
+   * its native coin (Tron adds USDT), and they exist purely so the intent
+   * bridges that DO reach them — NEAR Intents covers 35 blockchains — have a
+   * chain to attach to. Every contract-based adapter opts out via supports().
+   */
+  { code: "doge", name: "Dogecoin", id: null, nativeSymbol: "DOGE", evm: false },
+  { code: "litecoin", name: "Litecoin", id: null, nativeSymbol: "LTC", evm: false },
+  { code: "bitcoincash", name: "Bitcoin Cash", id: null, nativeSymbol: "BCH", evm: false },
+  { code: "zcash", name: "Zcash", id: null, nativeSymbol: "ZEC", evm: false },
+  { code: "dash", name: "Dash", id: null, nativeSymbol: "DASH", evm: false },
+  { code: "cardano", name: "Cardano", id: null, nativeSymbol: "ADA", evm: false },
+  { code: "tron", name: "Tron", id: null, nativeSymbol: "TRX", evm: false },
+  /**
+   * Osmosis (Cosmos/IBC). Assets are denoms (`uosmo`, `ibc/<hash>`) rather than
+   * contract addresses. Added for the Osmosis SQS router and Skip Go.
+   */
+  { code: "osmosis", name: "Osmosis", id: null, nativeSymbol: "OSMO", evm: false },
+  /**
    * Starknet. NOT served by OpenOcean's /v4 endpoints — it's here so the
    * Starknet-native aggregators (AVNU, Fibrous) have a chain to attach to.
    * Its addresses are felt252 hex, not 20-byte EVM addresses, which is why
@@ -112,10 +142,49 @@ export function findChain(code: string): ChainInfo | undefined {
 /** Stellar's native asset is the literal string "native", not an address. */
 export const STELLAR_NATIVE = "native";
 
+/** Sui's native coin type. Sui addresses are `pkg::module::TYPE`. */
+export const SUI_NATIVE = "0x2::sui::SUI";
+
+/** Aptos' native coin type. */
+export const APTOS_NATIVE = "0x1::aptos_coin::AptosCoin";
+
+/**
+ * TON's native coin. STON.fi has no pool for bare TON — it routes through
+ * wrapped pTON — so adapters that need a pool substitute their own wrapper.
+ */
+export const TON_NATIVE = "native";
+
+/** Osmosis denoms are not addresses; the native one is `uosmo`. */
+export const OSMOSIS_NATIVE = "uosmo";
+
 /** The address to use for a chain's native coin. */
 export function nativeAddressFor(chain: ChainInfo): string {
   if (chain.evm) return NATIVE;
-  if (chain.code === "solana") return SOL_NATIVE;
-  if (chain.code === "stellar") return STELLAR_NATIVE;
-  return NATIVE;
+  switch (chain.code) {
+    case "solana":
+      return SOL_NATIVE;
+    case "stellar":
+      return STELLAR_NATIVE;
+    case "sui":
+      return SUI_NATIVE;
+    case "aptos":
+      return APTOS_NATIVE;
+    case "ton":
+      return TON_NATIVE;
+    case "osmosis":
+      return OSMOSIS_NATIVE;
+    // These chains have no token addresses; the symbol IS the identifier, and
+    // 1Click matches them by symbol since their natives carry no contract.
+    case "bitcoin":
+    case "doge":
+    case "litecoin":
+    case "bitcoincash":
+    case "zcash":
+    case "dash":
+    case "cardano":
+    case "tron":
+      return chain.nativeSymbol;
+    default:
+      return NATIVE;
+  }
 }

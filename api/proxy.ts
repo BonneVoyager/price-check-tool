@@ -108,6 +108,33 @@ const TARGETS = {
       };
     },
   },
+  /**
+   * 1inch — `api.1inch.dev` sends no CORS headers, and the key is a personal
+   * one from portal.1inch.dev, so both reasons point at the proxy.
+   *
+   * The chain id is a PATH segment here, not a query param.
+   */
+  oneinch: {
+    build(p: URLSearchParams) {
+      const key = process.env.ONEINCH_API_KEY ?? "";
+      if (!key) throw new Error("ONEINCH_API_KEY is not set on the proxy");
+      const chainId = p.get("chainId") ?? "1";
+      if (!/^\d+$/.test(chainId)) throw new Error("bad chainId");
+      const qs = new URLSearchParams({
+        src: p.get("src") ?? "",
+        dst: p.get("dst") ?? "",
+        amount: p.get("amount") ?? "",
+        includeProtocols: "true",
+      });
+      return {
+        url: `https://api.1inch.dev/swap/v6.1/${chainId}/quote?${qs}`,
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${key}`,
+        } as Record<string, string>,
+      };
+    },
+  },
 } satisfies Record<
   string,
   { build(p: URLSearchParams): { url: string; headers: Record<string, string> } }

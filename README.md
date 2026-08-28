@@ -1,6 +1,6 @@
 # Price Check Tool
 
-Compare swap quotes across **19 sources** — aggregators, DEX routers, RFQ market
+Compare swap quotes across **34 sources** — aggregators, DEX routers, RFQ market
 makers, solver networks and a direct on-chain pool read — on one pair, side by
 side, across **44 chains** (EVM, Solana, Sui, Aptos, NEAR, Starknet, Stellar).
 
@@ -302,7 +302,8 @@ Cross-chain adds `toChain`; everything else is identical:
 | `chain` | **source** chain code (`eth`, `bsc`, `polygon_zkevm`, `stellar`) |
 | `toChain` | destination chain — omit for a same-chain swap |
 | `from` / `to` | **symbol or address** — `from=ETH` or `from=0x64aa…` |
-| `amount`, `slippage`, `gas` | numbers; `slippage` is percent, `gas` gwei |
+| `amount`, `slippage` | numbers; `slippage` is percent |
+| `gas` | gwei — **optional**; fetched live per chain when absent |
 | `account` | optional, only used by `/swap` |
 
 Design decisions worth knowing:
@@ -324,7 +325,44 @@ Design decisions worth knowing:
   rejected (non-numeric or non-positive) so a truncated link can't forward
   garbage to 19 APIs. The URL then self-cleans.
 
+`gas` and `account` are no longer on-screen fields, but both still work as URL
+params — see [Hidden inputs](#two-fields-that-are-no-longer-fields) below.
+
 Works identically on both deployments — the logic is bundled, not server-side.
+
+### Two fields that are no longer fields
+
+**Gas price** was a text box defaulting to 3 gwei. Only **1 of the 34 sources**
+(OpenOcean) consumes it, where it moves the quote by ~0.1% across the plausible
+range — it decides whether an extra routing hop pays for itself. So it mattered
+slightly, for one row, in a way no user should have to reason about; and a
+hand-tuned value there would skew that row against the other 33.
+
+It is now fetched live per chain from OpenOcean's `gasPrice` endpoint (which is
+CORS-open, unlike `/quote`). The old fixed default was badly wrong on L2s:
+Ethereum reads ~0.4 gwei and Base ~0.006, so 3 was off by 500× on Base.
+
+Two details worth knowing:
+
+- The endpoint returns **two shapes** — `{standard: {legacyGasPrice}}` on
+  Ethereum, `{standard: <number>}` elsewhere. Both are wei.
+- An auto-fetched value is **not** written to the URL. It is derived state, so
+  writing it would put `gas=0.43` in every shared link and freeze a momentary
+  gas price into a link read hours later. An explicit `?gas=` is treated as user
+  intent: it survives the live lookup and stays in the URL.
+
+**Account** was a field most visitors never filled in, since only `/swap` uses
+it. `/swap` now prompts for it on click instead. Cancelling is a deliberate
+no-op rather than an error — an empty string would wipe a stored value — and the
+prompt pre-fills with whatever is already known, so repeat clicks don't retype
+it.
+
+Both remain in the DOM as hidden inputs rather than being deleted. Seven code
+paths read `#account` and `#gasPrice` (URL restore, `syncUrl`, the compare
+request, the `/quote` and `/swap` calls); a hidden input keeps all of them on one
+field instead of scattering null checks. Note a hidden input never fires
+`change`, so the `change` → `syncUrl` listener was removed for those two and the
+prompt calls `syncUrl()` itself.
 
 ---
 
@@ -333,7 +371,7 @@ Works identically on both deployments — the logic is bundled, not server-side.
 Pick a different **To chain** and the same Compare button prices a bridge.
 `ETH` on Ethereum → `USDC` on Solana is one comparison, not a different mode.
 
-**Six** of the 19 sources bridge. The other 13 report `Same-chain only — cannot
+**Twelve** of the 34 sources bridge. The rest report `Same-chain only — cannot
 bridge` as a neutral support gap, the same treatment a chain they don't cover
 gets. Verified live in both directions across VMs (EVM→SVM, SVM→EVM,
 EVM→Stellar).
@@ -453,6 +491,138 @@ cross-chain pair outright and point at Compare instead of quoting the source
 chain and returning a price for a swap you didn't ask for.
 
 ---
+
+## The 15 sources added in the second pass
+
+All probed live before implementing. Ordered by what they unlock.
+
+### New ecosystems
+
+| Source | Chain | Endpoint | Key |
+|---|---|---|---|
+| **Chainflip** | **Bitcoin**, ETH, SOL, DOT | `GET chainflip-swap.chainflip.io/v2/quote` | no |
+| **Aftermath** | Sui | `POST aftermath.finance/api/router/trade-route` | no |
+| **Cetus** | Sui | `GET api-sui.cetus.zone/router_v2/find_routes` | no |
+| **swap.coffee** | TON | `POST backend.swap.coffee/v1/route` | no |
+| **STON.fi** | TON | `POST api.ston.fi/v1/swap/simulate` | no |
+| **Osmosis SQS** | Cosmos | `GET sqsprod.osmosis.zone/router/quote` | no |
+| **Panora** | Aptos | `POST api.panora.exchange/swap` | public |
+| **Ekubo** | Starknet | `GET prod-api-quoter.ekubo.org/{chainId}/{amt}/{in}/{out}` | no |
+
+**Bitcoin is the notable one** — Chainflip bridges native BTC, which no
+aggregator in the set can reach. 0.1 BTC → 7,919 USDC, verified.
+
+### Two NEAR Intents faults, one ours and one theirs
+
+**`recipient is not valid` on TON — ours.** TON is unusually strict about the
+recipient address: the all-zero `UQ…`/`EQ…` address and several perfectly real
+wallets are all rejected. Only a bounceable `EQ…` address of the right form is
+accepted, so the placeholder was replaced with one probed to work for both TON
+assets (GRAM and USDT). All three TON corridors quote now.
+
+Two things surfaced while chasing it, worth recording:
+
+- TON assets use **`nep245:`** ids, not the `nep141:` every other chain uses.
+  The adapter reads `assetId` straight from their registry rather than building
+  it, so this was never a bug here — but a hand-built id would have failed with
+  `tokenOut is not valid`, which is what my first probe hit.
+- 1Click lists TON's native coin as **GRAM**, not TON. Our symbol fallback
+  matches it anyway.
+
+**The broker timeout — theirs.** This message is their infrastructure, not our
+request:
+
+```
+Failed to receive response within timeout of 25000ms for exchange
+"1Click-API:api-exchange" and routing key "quote"
+```
+
+Their API fronts a message broker, and under load it gives up talking to its own
+exchange service. The same body succeeds on the next call. Measured over 20
+sequential calls: 20/20 succeeded, p50 **363ms** but max **10.5s** — spiky
+enough that a single retry converts most of these into a quote.
+
+So the adapter retries **once**, and only on that specific message. Retrying
+more would let one struggling source hold up the other 33, and the runner has
+its own timeout above this. After two failures it says so explicitly rather than
+reporting "no route", which would wrongly imply the pair is unsupported. Proven
+by stubbing `fetch`: one induced failure recovers with a real quote, two produce
+the plain message, and it stops at exactly two calls.
+
+### NEAR Intents covers far more than we were asking it
+
+Its `ONECLICK_CHAINS` map listed 19 chains; `/v0/tokens` reports **35**, so it
+was sitting out corridors it serves — including Bitcoin. Now mapped, and BTC
+quotes in both directions with Chainflip corroborating to within 0.07%.
+
+That also justified adding seven single-asset chains that only intent bridges
+reach: **Dogecoin, Litecoin, Bitcoin Cash, Zcash, Dash, Cardano, Tron**. Each
+carries one native coin (Tron adds USDT); every contract-based adapter opts out
+via `supports()`.
+
+Two details found by probing rather than reading:
+
+- `refundTo` is validated against the **origin chain's** address format, so each
+  of these needs its own placeholder. Bitcoin accepts bech32, P2PKH and P2SH
+  interchangeably (all three quoted identically); Cardano and Dash rejected my
+  first attempts as invalid until real checksummed addresses were used.
+- **XRP is deliberately absent.** 1Click lists it, but its route returns
+  `Internal server error` in *both* directions regardless of address format —
+  an upstream fault, not ours. A chain that can only ever show an error row is
+  worse than no chain, so it was dropped rather than shipped broken.
+
+### New bridges
+
+**deBridge DLN**, **Across**, **Symbiosis**, **Fly** — all keyless. Fly is the
+same fly.trade dropped earlier for 403ing under load; its *public* host
+(`api.fly.trade`) answers fine, and it does both same-chain and cross-chain.
+
+### New same-chain routers
+
+**Raydium** (Solana AMM) and **DFlow** (Solana aggregator) — Solana went from 5
+sources to 7. Raydium is the Solana analogue of the Uniswap V3 adapter: a direct
+pool read, so it's the **control** that Jupiter and OpenOcean should be beating
+(and in testing they narrowly do — 104.92 vs 104.89).
+
+**1inch** is wired but needs a free key from portal.1inch.dev, set as
+`ONEINCH_API_KEY`. It has no CORS headers, so like 0x it goes through the proxy.
+
+### Wire-format traps worth knowing
+
+Each of these would have produced a silently wrong or missing row:
+
+- **Aftermath serialises BigInts with a trailing `n`** — the amount arrives as
+  the string `"7570648n"`. Left alone it parses to `NaN` and the row vanishes
+  from the ranking *without reporting a failure*. Caught in testing; now
+  stripped. Also note `coinOut.amount` is the total while `routes[0]` is one leg
+  of a split, so reading the latter understates the quote.
+- **swap.coffee and Panora use decimal amounts**, not base units, on input and
+  output. Both are converted at the boundary so ranking compares like with like.
+- **STON.fi is POST but takes its params in the query string**, and has no pool
+  for bare TON — it routes through wrapped pTON, which the adapter substitutes.
+- **Osmosis concatenates amount and denom** into one param: `tokenIn=1000000uosmo`.
+- **deBridge wants the zero address for native coins**, and rejects our
+  `0xEeee…` sentinel outright.
+- **Ekubo puts everything in the path**, and wants Starknet's chain id in
+  decimal (`23448594291968334`).
+- **Fly's two endpoints rename the same parameters** — same-chain takes
+  `network`/`slippage`, cross-chain takes `fromNetwork`/`toNetwork`/`slippageIn`.
+
+### Rejected in this pass
+
+- **Odos — permanently shut down** (July 2026). I had earlier flagged its
+  Cloudflare 530s as probably our sandbox IP; that was wrong. `app.odos.xyz`
+  loads fine and serves a shutdown-and-wallet-recovery notice.
+- **Socket V3** — keyless and CORS-open, but its shared public host rate-limited
+  us (`429`) during verification. Worth revisiting.
+- **LayerZero VT** (Stargate's successor), **Hashflow**, **Clipper**, **Squid**,
+  **Rango**, **OKX DEX** — all key-gated with no self-service signup found.
+- **Yield Yak** — no REST API by design; quoting is on-chain view calls only.
+- **Swing.xyz** — DNS gone entirely.
+- **Titan** — WebSocket + MessagePack, not REST.
+- **Orca / Meteora / DeDust / Turbos / Thala** — no usable quote endpoint (Orca's
+  `/v1/quote` returns HTTP 200 with a stale cached *error blob*, which a
+  status-code-only check would have ranked as real data).
 
 ## Comparing aggregators
 

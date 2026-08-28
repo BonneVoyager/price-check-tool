@@ -10,8 +10,14 @@
  * which would force a server and undo the static build.
  */
 
-import { CHAINS, type ChainInfo } from "../chains.ts";
-import { ENSO_API_KEY, SOROSWAP_API_KEY, ZEROX_API_KEY } from "./keys.ts";
+import { CHAINS, NATIVE, TON_NATIVE, type ChainInfo } from "../chains.ts";
+import {
+  ENSO_API_KEY,
+  ONEINCH_API_KEY,
+  PANORA_API_KEY,
+  SOROSWAP_API_KEY,
+  ZEROX_API_KEY,
+} from "./keys.ts";
 import { contractIdForAsset, isStellarAsset } from "./soroban.ts";
 import { proxyAvailable, proxyUrl } from "./proxy.ts";
 import { getQuote, toBaseUnits } from "../openocean.ts";
@@ -1050,11 +1056,25 @@ const ONECLICK_PLACEHOLDER: Record<string, string> = {
   sui: "0x0000000000000000000000000000000000000000000000000000000000000002",
   starknet: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
   tron: "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
-  ton: "UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+  // TON is fussy: the all-zero UQ/EQ address and several real wallets are all
+  // rejected as "recipient is not valid". This one is accepted for both TON
+  // assets (GRAM and USDT), verified by probing — so it is a working value, not
+  // a canonical zero address.
+  ton: "EQD2NmD_lH5f5u1Kj3KfGyTvhZSX0Eg6qp2a5IQUKXxOG21n",
   // Stellar additionally requires the recipient to hold a TRUSTLINE for the
   // destination asset, so no placeholder works for non-native destinations —
   // see the note in the adapter.
   stellar: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+  // Bitcoin: 1Click validates refundTo against the ORIGIN chain's format, and
+  // any valid BTC form is accepted — bech32, P2PKH and P2SH all quoted
+  // identically when probed, so the well-known bech32 example is used.
+  btc: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+  doge: "DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L",
+  ltc: "LhyLNfBkoKshT7R8Pce6vkB9T2cP2o84hx",
+  bch: "qr95sy3j9xwd2ap32xkykttr4cvcu7as4y0qverfuy",
+  zec: "t1KDGuBpNTgqcnJhVvLGoKPjKrnCFxfCwvL",
+  dash: "Xx4dYKgz3Zcv6kheaqog3fynaKWjbahb6b",
+  cardano: "addr1qy2jt0qpqz2z2z9zx5w4xemekkce7yderz53kjue53lpqv90lkfa9sgrfjuz6uvt4uqtrqhl2kj0a9lnr9ndzutx32gqleeckv",
 };
 
 /** Our chain code -> 1Click's `blockchain` value. */
@@ -1078,6 +1098,17 @@ const ONECLICK_CHAINS: Record<string, string> = {
   ton: "ton",
   tron: "tron",
   stellar: "stellar",
+  // Non-EVM/UTXO chains. 1Click covers 35 blockchains; these are the ones we
+  // also carry as chains, verified against /v0/tokens. Their native coins have
+  // NO contractAddress, which findOneClickAsset already handles.
+  bitcoin: "btc",
+  hyperevm: "hypercore",
+  doge: "doge",
+  litecoin: "ltc",
+  bitcoincash: "bch",
+  zcash: "zec",
+  dash: "dash",
+  cardano: "cardano",
 };
 
 interface OneClickAsset {
@@ -1220,11 +1251,28 @@ const nearIntents: QuoteAdapter = {
     const deadline = new Date(Date.now() + 30 * 60_000).toISOString();
 
     const url = `${ONECLICK_BASE}/quote`;
-    let json: Record<string, any>;
-    try {
-      json = await postJson(
-        url,
-        {
+    // Initialised so the retry loop below can leave it unset on a double
+    // failure without TypeScript losing track of it.
+    let json: Record<string, any> = {};
+    /**
+     * One retry on 1Click's INTERNAL broker timeout.
+     *
+     * Their API fronts a message broker, and under load it gives up talking to
+     * its own exchange service:
+     *   Failed to receive response within timeout of 25000ms for exchange
+     *   "1Click-API:api-exchange" and routing key "quote"
+     *
+     * That is their infrastructure, not our request — the same body succeeds on
+     * the next call. Measured p50 363ms but max 10.5s on a 20-call run, so the
+     * latency is spiky enough that one retry converts most of these into a
+     * quote. Retried ONCE only: a source that is genuinely struggling should
+     * not hold up the other 33, and the runner has its own timeout above this.
+     */
+    const isBrokerTimeout = (m: string) =>
+      /Failed to receive response within timeout/i.test(m) &&
+      /1Click-API|api-exchange/i.test(m);
+
+    const body = () => ({
           // dry: true = price only, nothing committed and no deposit address.
           dry: true,
           // Stellar deposits are identified by transaction memo, not a unique
@@ -1244,20 +1292,47 @@ const nearIntents: QuoteAdapter = {
           recipient: taker,
           recipientType: "DESTINATION_CHAIN",
           deadline,
-          },
-          signal,
-        );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Stellar requires the RECIPIENT to already hold a trustline for the
-      // destination asset — a chain-level rule, not a liquidity problem. A
-      // placeholder address can never satisfy it, so say what would.
-      if (/trustline/i.test(msg)) {
-        throw new NoRouteError(
-          "Recipient needs a Stellar trustline for this asset — set Account",
-        );
+    });
+
+    // Two attempts, then give up. Written as a loop so the success path below
+    // is shared rather than duplicated into the retry branch.
+    let lastBrokerMsg = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        json = await postJson(url, body(), signal);
+        // A broker timeout can arrive as a normal body OR as a thrown non-2xx,
+        // so both places have to recognise it.
+        const m = String(json.message ?? "");
+        if (isBrokerTimeout(m)) {
+          lastBrokerMsg = m;
+          continue;
+        }
+        lastBrokerMsg = "";
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isBrokerTimeout(msg)) {
+          lastBrokerMsg = msg;
+          continue;
+        }
+        // Stellar requires the RECIPIENT to already hold a trustline for the
+        // destination asset — a chain-level rule, not a liquidity problem. A
+        // placeholder address can never satisfy it, so say what would.
+        if (/trustline/i.test(msg)) {
+          throw new NoRouteError(
+            "Recipient needs a Stellar trustline for this asset — set Account",
+          );
+        }
+        throw err;
       }
-      throw err;
+    }
+
+    // Both attempts hit their broker. Say whose fault it is: "no route" would
+    // imply the pair is unsupported, which is not what happened.
+    if (lastBrokerMsg) {
+      throw new NoRouteError(
+        "NEAR Intents' broker timed out twice — their service is busy, try again",
+      );
     }
 
     const q = json.quote;
@@ -2230,6 +2305,990 @@ const soroswap: QuoteAdapter = {
   },
 };
 
+
+// ---------------------------------------------------------------------------
+// deBridge DLN — intent/solver bridge. Cross-chain ONLY: it rejects a
+// same-chain quote with SAME_SOURCE_AND_DESTINATION_CHAINS.
+//
+// Native token is the ZERO address here, not our 0xEeee… sentinel, which it
+// rejects outright as INVALID_QUERY_PARAMETERS.
+// ---------------------------------------------------------------------------
+
+/** DLN chain ids. EVM chains use their own id; Solana has a DLN-specific one. */
+const DLN_CHAINS: Record<string, number> = {
+  eth: 1,
+  bsc: 56,
+  polygon: 137,
+  arbitrum: 42161,
+  optimism: 10,
+  base: 8453,
+  avax: 43114,
+  linea: 59144,
+  bera: 80094,
+  sonic: 146,
+  cronos: 25,
+  gravity: 1625,
+  metis: 1088,
+  fantom: 250,
+  // DLN's internal id for Solana, not a real EVM chain id.
+  solana: 7565164,
+};
+
+const debridge: QuoteAdapter = {
+  id: "debridge",
+  label: "deBridge",
+  blurb: "DLN solver network (cross-chain only)",
+  crossChain: true,
+
+  supports(req) {
+    if (!isCrossChain(req)) return "Bridge only — same-chain not quoted";
+    for (const c of [req.fromChain, req.toChain]) {
+      if (!DLN_CHAINS[c.code]) return `${c.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    // DLN wants the zero address for a native coin on every chain.
+    const addr = (chain: ChainInfo, token: { address: string }) => {
+      if (chain.evm && token.address.toLowerCase() === NATIVE.toLowerCase()) {
+        return "0x0000000000000000000000000000000000000000";
+      }
+      return token.address;
+    };
+
+    const url =
+      `https://dln.debridge.finance/v1.0/dln/order/quote?` +
+      qs({
+        srcChainId: DLN_CHAINS[req.fromChain.code],
+        srcChainTokenIn: addr(req.fromChain, req.inToken),
+        srcChainTokenInAmount: toBaseUnits(req.amount, req.inToken.decimals),
+        dstChainId: DLN_CHAINS[req.toChain.code],
+        dstChainTokenOut: addr(req.toChain, req.outToken),
+        prependOperatingExpenses: "false",
+      });
+
+    const { json } = await getJson(url, signal);
+    const out = json.estimation?.dstChainTokenOut?.amount;
+    if (!out) {
+      throw new NoRouteError(json.errorMessage ?? json.errorId ?? "no route");
+    }
+
+    return {
+      source: "debridge",
+      label: "deBridge",
+      kind: "intent",
+      outAmount: String(out),
+      outDecimals: json.estimation.dstChainTokenOut.decimals ?? req.outToken.decimals,
+      venues: dedupeVenues(["DLN"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Across — optimistic bridge. Note LI.FI and 0x already route OVER Across, so
+// this row is deliberately a duplicate: it shows whether those aggregators are
+// marking up the underlying bridge.
+//
+// Same-token only — it bridges an asset to its counterpart, it does not swap.
+// ---------------------------------------------------------------------------
+
+const ACROSS_CHAINS: Record<string, number> = {
+  eth: 1,
+  optimism: 10,
+  polygon: 137,
+  base: 8453,
+  arbitrum: 42161,
+  linea: 59144,
+  scroll: 534352,
+  zksync: 324,
+  blast: 81457,
+  mode: 34443,
+  bsc: 56,
+  sonic: 146,
+  ink: 57073,
+  unichain: 130,
+};
+
+const across: QuoteAdapter = {
+  id: "across",
+  label: "Across",
+  blurb: "Optimistic bridge (same asset only)",
+  crossChain: true,
+
+  supports(req) {
+    if (!isCrossChain(req)) return "Bridge only — same-chain not quoted";
+    for (const c of [req.fromChain, req.toChain]) {
+      if (!ACROSS_CHAINS[c.code]) return `${c.name} not covered`;
+    }
+    // Across moves an asset across chains; it has no swap leg, so a different
+    // symbol on each side is not something it can quote.
+    if (req.inToken.symbol.toUpperCase() !== req.outToken.symbol.toUpperCase()) {
+      return `Bridges the same asset only (${req.inToken.symbol}→${req.inToken.symbol})`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url =
+      `https://app.across.to/api/suggested-fees?` +
+      qs({
+        inputToken: req.inToken.address,
+        outputToken: req.outToken.address,
+        originChainId: ACROSS_CHAINS[req.fromChain.code],
+        destinationChainId: ACROSS_CHAINS[req.toChain.code],
+        amount: toBaseUnits(req.amount, req.inToken.decimals),
+      });
+
+    const { json } = await getJson(url, signal);
+    if (json.isAmountTooLow) {
+      throw new NoRouteError("amount below Across' minimum");
+    }
+    if (!json.outputAmount) {
+      throw new NoRouteError(json.message ?? "no fee quote");
+    }
+
+    return {
+      source: "across",
+      label: "Across",
+      outAmount: String(json.outputAmount),
+      outDecimals: req.outToken.decimals,
+      venues: dedupeVenues(["Across"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Symbiosis — cross-chain aggregator. Body shape taken from their live OpenAPI
+// at api.symbiosis.finance/crosschain/openapi.json (required: tokenAmountIn,
+// tokenOut, from, to, slippage).
+// ---------------------------------------------------------------------------
+
+const SYMBIOSIS_CHAINS: Record<string, number> = {
+  eth: 1,
+  bsc: 56,
+  polygon: 137,
+  arbitrum: 42161,
+  optimism: 10,
+  base: 8453,
+  avax: 43114,
+  linea: 59144,
+  scroll: 534352,
+  zksync: 324,
+  mantle: 5000,
+  blast: 81457,
+  bera: 80094,
+  sonic: 146,
+  cronos: 25,
+  metis: 1088,
+  xdai: 100,
+  sei: 1329,
+};
+
+const symbiosis: QuoteAdapter = {
+  id: "symbiosis",
+  label: "Symbiosis",
+  blurb: "Cross-chain aggregator",
+  crossChain: true,
+
+  supports(req) {
+    if (!isCrossChain(req)) return "Bridge only — same-chain not quoted";
+    for (const c of [req.fromChain, req.toChain]) {
+      if (!SYMBIOSIS_CHAINS[c.code]) return `${c.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url = "https://api.symbiosis.finance/crosschain/v2/quote";
+    const taker = req.account || PLACEHOLDER_TAKER;
+    const json = await postJson(
+      url,
+      {
+        tokenAmountIn: {
+          address: req.inToken.address.toLowerCase() === NATIVE.toLowerCase()
+            ? ""
+            : req.inToken.address,
+          amount: toBaseUnits(req.amount, req.inToken.decimals),
+          chainId: SYMBIOSIS_CHAINS[req.fromChain.code],
+          decimals: req.inToken.decimals,
+        },
+        tokenOut: {
+          address: req.outToken.address.toLowerCase() === NATIVE.toLowerCase()
+            ? ""
+            : req.outToken.address,
+          chainId: SYMBIOSIS_CHAINS[req.toChain.code],
+          decimals: req.outToken.decimals,
+        },
+        from: taker,
+        to: taker,
+        slippage: Math.round(Number(req.slippage || "1") * 100),
+      },
+      signal,
+    );
+
+    const out = json.tokenAmountOut?.amount ?? json.amountOut;
+    if (!out) throw new NoRouteError(json.message ?? "no route");
+
+    return {
+      source: "symbiosis",
+      label: "Symbiosis",
+      outAmount: String(out),
+      outDecimals: json.tokenAmountOut?.decimals ?? req.outToken.decimals,
+      venues: dedupeVenues([json.inTradeType, json.outTradeType]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Raydium — Solana's largest AMM, read directly. This is the Solana analogue of
+// the Uniswap V3 adapter: a pool price rather than a routing opinion, so it acts
+// as the CONTROL that Jupiter/OpenOcean should be beating.
+// ---------------------------------------------------------------------------
+
+const raydium: QuoteAdapter = {
+  id: "raydium",
+  label: "Raydium",
+  blurb: "Solana AMM, direct read",
+
+  supports(req) {
+    if (req.chain.code !== "solana") return "Solana only";
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url =
+      `https://transaction-v1.raydium.io/compute/swap-base-in?` +
+      qs({
+        inputMint: req.inToken.address,
+        outputMint: req.outToken.address,
+        amount: toBaseUnits(req.amount, req.inToken.decimals),
+        slippageBps: Math.round(Number(req.slippage || "1") * 100),
+        txVersion: "V0",
+      });
+
+    const { json } = await getJson(url, signal);
+    const d = json.data;
+    if (!json.success || !d?.outputAmount) {
+      throw new NoRouteError(json.msg ?? "no route");
+    }
+
+    return {
+      source: "raydium",
+      label: "Raydium",
+      kind: "onchain",
+      outAmount: String(d.outputAmount),
+      outDecimals: req.outToken.decimals,
+      minOutAmount: d.otherAmountThreshold ? String(d.otherAmountThreshold) : undefined,
+      priceImpact: d.priceImpactPct != null ? String(d.priceImpactPct) : undefined,
+      venues: dedupeVenues(
+        (d.routePlan ?? []).map((r: any) => r?.poolId ? "Raydium pool" : undefined),
+      ),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Aftermath — Sui aggregator, routing over Cetus/Turbos/etc. Sui coin types are
+// `pkg::module::TYPE`, not addresses.
+// ---------------------------------------------------------------------------
+
+const aftermath: QuoteAdapter = {
+  id: "aftermath",
+  label: "Aftermath",
+  blurb: "Sui aggregator",
+
+  supports(req) {
+    if (req.chain.code !== "sui") return "Sui only";
+    // Sui coin types always contain `::`; an EVM address here means the token
+    // picker and chain are out of step.
+    for (const t of [req.inToken, req.outToken]) {
+      if (!t.address.includes("::")) return `${t.symbol} is not a Sui coin type`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url = "https://aftermath.finance/api/router/trade-route";
+    const json = await postJson(
+      url,
+      {
+        coinInType: req.inToken.address,
+        coinOutType: req.outToken.address,
+        coinInAmount: toBaseUnits(req.amount, req.inToken.decimals),
+      },
+      signal,
+    );
+
+    // `coinOut.amount` is the total across all routes; routes[0] is only one
+    // leg of a split, so taking it would understate the quote.
+    //
+    // Aftermath serialises BigInts with a trailing "n" — the amount arrives as
+    // the string "7570648n", not "7570648". Left as-is it parses to NaN and the
+    // row vanishes from the ranking without ever reporting a failure, so strip
+    // it rather than trusting the JSON to be plain numeric.
+    const raw = json.coinOut?.amount ?? json.routes?.[0]?.coinOut?.amount;
+    const out = raw != null ? String(raw).replace(/n$/, "") : undefined;
+    if (!out || !/^\d+$/.test(out)) {
+      throw new NoRouteError(json.message ?? "no route");
+    }
+
+    return {
+      source: "aftermath",
+      label: "Aftermath",
+      outAmount: out,
+      outDecimals: req.outToken.decimals,
+      venues: dedupeVenues(
+        (json.routes?.[0]?.paths ?? []).map((p: any) => p?.protocolName),
+      ),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// swap.coffee — TON aggregator. Amounts here are HUMAN-READABLE decimals, not
+// base units, unlike almost everything else in this file.
+// ---------------------------------------------------------------------------
+
+const swapCoffee: QuoteAdapter = {
+  id: "swapcoffee",
+  label: "swap.coffee",
+  blurb: "TON aggregator",
+
+  supports(req) {
+    if (req.chain.code !== "ton") return "TON only";
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url = "https://backend.swap.coffee/v1/route";
+    const asset = (addr: string) => ({
+      blockchain: "ton",
+      address: addr === TON_NATIVE ? "native" : addr,
+    });
+
+    const json = await postJson(
+      url,
+      {
+        input_token: asset(req.inToken.address),
+        output_token: asset(req.outToken.address),
+        // Human-readable, NOT base units.
+        input_amount: Number(req.amount),
+        max_slippage: Number(req.slippage || "1") / 100,
+      },
+      signal,
+    );
+
+    const out = json.output_amount ?? json.paths?.[0]?.output_amount;
+    if (out == null) throw new NoRouteError(json.error ?? "no route");
+
+    return {
+      source: "swapcoffee",
+      label: "swap.coffee",
+      // Decimal out -> base units, so ranking compares like with like.
+      outAmount: toBaseUnits(String(out), req.outToken.decimals),
+      outDecimals: req.outToken.decimals,
+      venues: dedupeVenues(
+        (json.paths ?? []).map((p: any) => p?.dex ?? p?.provider),
+      ),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// STON.fi — TON DEX. Two quirks worth knowing:
+//  - The endpoint is POST but takes its params in the QUERY STRING.
+//  - There is no pool for bare TON; it routes through wrapped pTON, so a
+//    native-TON side has to be substituted.
+// ---------------------------------------------------------------------------
+
+/** STON.fi's canonical pTON wrapper, used wherever a native-TON side appears. */
+const STONFI_PTON = "EQCM3B12QK1e4yZSf8GtBRT0aLMNyEsBc_DhVfRRtOEffLez";
+
+const stonfi: QuoteAdapter = {
+  id: "stonfi",
+  label: "STON.fi",
+  blurb: "TON DEX",
+
+  supports(req) {
+    if (req.chain.code !== "ton") return "TON only";
+    return true;
+  },
+
+  async quote(req, signal) {
+    const addr = (a: string) => (a === TON_NATIVE ? STONFI_PTON : a);
+    // Params go in the query string even though the method is POST.
+    const url =
+      `https://api.ston.fi/v1/swap/simulate?` +
+      qs({
+        offer_address: addr(req.inToken.address),
+        ask_address: addr(req.outToken.address),
+        units: toBaseUnits(req.amount, req.inToken.decimals),
+        slippage_tolerance: String(Number(req.slippage || "1") / 100),
+      });
+
+    const res = await fetch(url, { method: "POST", signal });
+    const text = await res.text();
+    let json: Record<string, any>;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new NoRouteError(`Non-JSON response (HTTP ${res.status})`);
+    }
+    if (!res.ok || !json.ask_units) {
+      // Their errors arrive as a bare JSON string like "1010: Could not find
+      // pool address for …" — surface the useful half.
+      const msg = typeof json === "string" ? json : json.error ?? `HTTP ${res.status}`;
+      throw new NoRouteError(String(msg).replace(/^\d+:\s*/, "").slice(0, 90));
+    }
+
+    return {
+      source: "stonfi",
+      label: "STON.fi",
+      kind: "onchain",
+      outAmount: String(json.ask_units),
+      outDecimals: req.outToken.decimals,
+      minOutAmount: json.min_ask_units ? String(json.min_ask_units) : undefined,
+      priceImpact: json.price_impact != null ? String(json.price_impact) : undefined,
+      venues: dedupeVenues(["STON.fi"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Osmosis SQS — the Cosmos/IBC router. Assets are denoms (`uosmo`,
+// `ibc/<hash>`, `factory/…`), and the input amount is CONCATENATED with its
+// denom in a single param: `tokenIn=1000000uosmo`.
+// ---------------------------------------------------------------------------
+
+const osmosis: QuoteAdapter = {
+  id: "osmosis",
+  label: "Osmosis",
+  blurb: "Cosmos router (SQS)",
+
+  supports(req) {
+    if (req.chain.code !== "osmosis") return "Osmosis only";
+    return true;
+  },
+
+  async quote(req, signal) {
+    const amount = toBaseUnits(req.amount, req.inToken.decimals);
+    const url =
+      `https://sqsprod.osmosis.zone/router/quote?` +
+      qs({
+        // Amount and denom are one value, not two params.
+        tokenIn: `${amount}${req.inToken.address}`,
+        tokenOutDenom: req.outToken.address,
+      });
+
+    const { json } = await getJson(url, signal);
+    if (!json.amount_out) throw new NoRouteError(json.message ?? "no route");
+
+    return {
+      source: "osmosis",
+      label: "Osmosis",
+      kind: "onchain",
+      outAmount: String(json.amount_out),
+      outDecimals: req.outToken.decimals,
+      priceImpact: json.price_impact != null ? String(json.price_impact) : undefined,
+      venues: dedupeVenues(["Osmosis"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Panora — Aptos aggregator. Its amounts are DECIMAL strings on both sides, so
+// the request takes a human amount and the response needs converting back.
+// ---------------------------------------------------------------------------
+
+const panora: QuoteAdapter = {
+  id: "panora",
+  label: "Panora",
+  blurb: "Aptos aggregator",
+
+  supports(req) {
+    if (req.chain.code !== "aptos") return "Aptos only";
+    if (!PANORA_API_KEY) return "Set PANORA_API_KEY";
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url =
+      `https://api.panora.exchange/swap?` +
+      qs({
+        chainId: 1,
+        fromTokenAddress: req.inToken.address,
+        toTokenAddress: req.outToken.address,
+        // Human-readable, not base units.
+        fromTokenAmount: req.amount,
+        toWalletAddress: req.account || "0x1",
+        slippagePercentage: req.slippage || "1",
+      });
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "x-api-key": PANORA_API_KEY, accept: "application/json" },
+      signal,
+    });
+    const json = (await res.json().catch(() => ({}))) as Record<string, any>;
+    const best = json.quotes?.[0];
+    if (!res.ok || !best?.toTokenAmount) {
+      throw new NoRouteError(json.message ?? `HTTP ${res.status}`);
+    }
+
+    const decimals = json.toToken?.decimals ?? req.outToken.decimals;
+    return {
+      source: "panora",
+      label: "Panora",
+      outAmount: toBaseUnits(String(best.toTokenAmount), decimals),
+      outDecimals: decimals,
+      minOutAmount: best.minToTokenAmount
+        ? toBaseUnits(String(best.minToTokenAmount), decimals)
+        : undefined,
+      priceImpact:
+        best.priceImpact != null && Number(best.priceImpact) !== 0
+          ? String(best.priceImpact)
+          : undefined,
+      venues: dedupeVenues([best.dexName ?? "Panora"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 1inch — the best-known EVM aggregator. Server-side only: api.1inch.dev sends
+// no CORS headers and the key must not ship to the browser, so this goes
+// through the proxy exactly like 0x does.
+// ---------------------------------------------------------------------------
+
+const ONEINCH_CHAINS = new Set([
+  1, 56, 137, 42161, 10, 8453, 43114, 100, 250, 324, 59144, 8217, 1101, 534352,
+  146, 130, 43111, 80094,
+]);
+
+const oneinch: QuoteAdapter = {
+  id: "oneinch",
+  label: "1inch",
+  blurb: "No CORS — via proxy in the browser",
+
+  supports(req) {
+    if (!req.chain.evm) return `${req.chain.name} is not EVM`;
+    if (req.chain.id == null || !ONEINCH_CHAINS.has(req.chain.id)) {
+      return `${req.chain.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const inBrowser = typeof window !== "undefined";
+    const params = {
+      chainId: req.chain.id ?? undefined,
+      src: req.inToken.address,
+      dst: req.outToken.address,
+      amount: toBaseUnits(req.amount, req.inToken.decimals),
+      includeProtocols: "true",
+    };
+
+    let json: Record<string, any>;
+    let url: string;
+
+    if (inBrowser) {
+      if (!(await proxyAvailable())) {
+        throw new NoRouteError("1inch needs the proxy (no CORS) — proxy unreachable");
+      }
+      url = proxyUrl("oneinch", params);
+      const res = await fetch(url, { signal });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new NoRouteError(body?.error ?? `proxy returned ${res.status}`);
+      }
+      json = (await res.json()) as Record<string, any>;
+    } else {
+      if (!ONEINCH_API_KEY) {
+        throw new NoRouteError("Set ONEINCH_API_KEY in .env (portal.1inch.dev)");
+      }
+      const { chainId, ...rest } = params;
+      url = `https://api.1inch.dev/swap/v6.1/${chainId}/quote?` + qs(rest);
+      json = (await getJson(url, signal, {
+        Authorization: `Bearer ${ONEINCH_API_KEY}`,
+      })).json;
+    }
+
+    const out = json.dstAmount ?? json.toAmount;
+    if (!out) throw new NoRouteError(json.description ?? json.error ?? "no route");
+
+    return {
+      source: "oneinch",
+      label: "1inch",
+      outAmount: String(out),
+      outDecimals: req.outToken.decimals,
+      venues: dedupeVenues(
+        (json.protocols ?? []).flat(2).map((p: any) => p?.name),
+      ),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Fly (formerly Magpie) — same-chain AND cross-chain, keyless on the public
+// host. `api.fly.trade` needs no key; `api.magpiefi.xyz` is the authenticated
+// host and would need a Discord ticket, so we deliberately use the public one.
+//
+// An earlier attempt at fly.trade was dropped after it 403'd under fan-out
+// load. The public aggregator host answers fine; if it starts rate-limiting
+// again the adapter degrades to a normal error row rather than breaking others.
+//
+// Chains are named, not numbered.
+// ---------------------------------------------------------------------------
+
+const FLY_NETWORKS: Record<string, string> = {
+  eth: "ethereum",
+  bsc: "bsc",
+  polygon: "polygon",
+  arbitrum: "arbitrum",
+  optimism: "optimism",
+  base: "base",
+  avax: "avalanche",
+  linea: "linea",
+  scroll: "scroll",
+  zksync: "zksync",
+  mantle: "mantle",
+  blast: "blast",
+  bera: "berachain",
+  sonic: "sonic",
+  xdai: "gnosis",
+  fantom: "fantom",
+  cronos: "cronos",
+  moonriver: "moonriver",
+};
+
+const fly: QuoteAdapter = {
+  id: "fly",
+  label: "Fly",
+  blurb: "Magpie aggregator (keyless public host)",
+  crossChain: true,
+
+  supports(req) {
+    for (const c of isCrossChain(req) ? [req.fromChain, req.toChain] : [req.chain]) {
+      if (!FLY_NETWORKS[c.code]) return `${c.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const cross = isCrossChain(req);
+    const taker = req.account || PLACEHOLDER_TAKER;
+    const slip = String(Number(req.slippage || "1") / 100);
+    const amount = toBaseUnits(req.amount, req.inToken.decimals);
+
+    // The two endpoints take DIFFERENT parameter names for the same things:
+    // same-chain wants `network` + `sellAmount` + `slippage`, cross-chain wants
+    // `fromNetwork`/`toNetwork` + `slippageIn`/`slippageOut`.
+    const url = cross
+      ? `https://api.fly.trade/aggregator/quote-in?` +
+        qs({
+          fromNetwork: FLY_NETWORKS[req.fromChain.code],
+          toNetwork: FLY_NETWORKS[req.toChain.code],
+          fromTokenAddress: req.inToken.address,
+          toTokenAddress: req.outToken.address,
+          sellAmount: amount,
+          slippageIn: slip,
+          slippageOut: slip,
+          fromAddress: taker,
+          toAddress: taker,
+          gasless: "false",
+        })
+      : `https://api.fly.trade/aggregator/quote?` +
+        qs({
+          network: FLY_NETWORKS[req.chain.code],
+          fromTokenAddress: req.inToken.address,
+          toTokenAddress: req.outToken.address,
+          sellAmount: amount,
+          slippage: slip,
+          fromAddress: taker,
+          toAddress: taker,
+          gasless: "false",
+        });
+
+    const { json } = await getJson(url, signal);
+    if (!json.amountOut) {
+      throw new NoRouteError(json.message ?? json.error ?? "no route");
+    }
+
+    return {
+      source: "fly",
+      label: "Fly",
+      outAmount: String(json.amountOut),
+      outDecimals: req.outToken.decimals,
+      venues: dedupeVenues(
+        (json.fees ?? []).some((f: any) => f?.type === "bridge")
+          ? ["Fly bridge"]
+          : ["Fly"],
+      ),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Chainflip — native cross-chain AMM. The only source here that quotes native
+// BITCOIN, which no aggregator in the set can reach.
+//
+// Assets are named by (chain, ticker), not by address: `srcChain=Ethereum&
+// srcAsset=ETH`. That means it can only quote assets it lists, so the adapter
+// maps by symbol and declines anything unlisted rather than guessing.
+// ---------------------------------------------------------------------------
+
+const CHAINFLIP_CHAINS: Record<string, string> = {
+  eth: "Ethereum",
+  arbitrum: "Arbitrum",
+  solana: "Solana",
+  bitcoin: "Bitcoin",
+  polkadot: "Polkadot",
+  base: "Base",
+};
+
+/** Assets Chainflip supports, per chain, keyed by our symbol. */
+const CHAINFLIP_ASSETS: Record<string, Set<string>> = {
+  Ethereum: new Set(["ETH", "USDC", "USDT", "FLIP"]),
+  Arbitrum: new Set(["ETH", "USDC"]),
+  Solana: new Set(["SOL", "USDC"]),
+  Bitcoin: new Set(["BTC"]),
+  Polkadot: new Set(["DOT"]),
+  Base: new Set(["ETH", "USDC"]),
+};
+
+const chainflip: QuoteAdapter = {
+  id: "chainflip",
+  label: "Chainflip",
+  blurb: "Native cross-chain AMM (incl. BTC)",
+  crossChain: true,
+
+  supports(req) {
+    if (!isCrossChain(req)) return "Bridge only — same-chain not quoted";
+    for (const [chain, token] of [
+      [req.fromChain, req.inToken],
+      [req.toChain, req.outToken],
+    ] as const) {
+      const name = CHAINFLIP_CHAINS[chain.code];
+      if (!name) return `${chain.name} not covered`;
+      // Symbol-keyed: it has no notion of an arbitrary token address.
+      if (!CHAINFLIP_ASSETS[name]?.has(token.symbol.toUpperCase())) {
+        return `${token.symbol} not listed on Chainflip ${name}`;
+      }
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url =
+      `https://chainflip-swap.chainflip.io/v2/quote?` +
+      qs({
+        srcChain: CHAINFLIP_CHAINS[req.fromChain.code],
+        srcAsset: req.inToken.symbol.toUpperCase(),
+        destChain: CHAINFLIP_CHAINS[req.toChain.code],
+        destAsset: req.outToken.symbol.toUpperCase(),
+        amount: toBaseUnits(req.amount, req.inToken.decimals),
+      });
+
+    const { json } = await getJson(url, signal);
+    // The response is an ARRAY of quote types (REGULAR, DCA); take the best.
+    const list: any[] = Array.isArray(json) ? json : [json];
+    const best = list
+      .filter((q) => q?.egressAmount)
+      .sort((a, b) => (BigInt(b.egressAmount) > BigInt(a.egressAmount) ? 1 : -1))[0];
+    if (!best) {
+      throw new NoRouteError((json as any).message ?? "no route");
+    }
+
+    return {
+      source: "chainflip",
+      label: "Chainflip",
+      outAmount: String(best.egressAmount),
+      outDecimals: req.outToken.decimals,
+      // Their own warning flag is worth surfacing rather than discarding.
+      priceImpact: best.lowLiquidityWarning ? "low liquidity" : undefined,
+      venues: dedupeVenues(["Chainflip"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Cetus — Sui's largest DEX, read via its router. Independent of Aftermath, so
+// the two cross-check each other on Sui.
+// ---------------------------------------------------------------------------
+
+const cetus: QuoteAdapter = {
+  id: "cetus",
+  label: "Cetus",
+  blurb: "Sui DEX router",
+
+  supports(req) {
+    if (req.chain.code !== "sui") return "Sui only";
+    for (const t of [req.inToken, req.outToken]) {
+      if (!t.address.includes("::")) return `${t.symbol} is not a Sui coin type`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url =
+      `https://api-sui.cetus.zone/router_v2/find_routes?` +
+      qs({
+        from: req.inToken.address,
+        target: req.outToken.address,
+        amount: toBaseUnits(req.amount, req.inToken.decimals),
+        by_amount_in: "true",
+        depth: 3,
+      });
+
+    const { json } = await getJson(url, signal);
+    const out = json.data?.amount_out;
+    if (json.code !== 200 || !out) {
+      throw new NoRouteError(json.msg ?? "no route");
+    }
+
+    return {
+      source: "cetus",
+      label: "Cetus",
+      kind: "onchain",
+      outAmount: String(out),
+      outDecimals: req.outToken.decimals,
+      venues: dedupeVenues(["Cetus"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// DFlow — Solana aggregator. The public `dev-quote-api` host is keyless; the
+// production host (`quote-api.dflow.net`) 403s without a key.
+//
+// Its response is Jupiter-shaped, which makes the mapping trivial.
+// ---------------------------------------------------------------------------
+
+const dflow: QuoteAdapter = {
+  id: "dflow",
+  label: "DFlow",
+  blurb: "Solana aggregator (public host)",
+
+  supports(req) {
+    if (req.chain.code !== "solana") return "Solana only";
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url =
+      `https://dev-quote-api.dflow.net/quote?` +
+      qs({
+        inputMint: req.inToken.address,
+        outputMint: req.outToken.address,
+        amount: toBaseUnits(req.amount, req.inToken.decimals),
+        slippageBps: Math.round(Number(req.slippage || "1") * 100),
+      });
+
+    const { json } = await getJson(url, signal);
+    if (!json.outAmount) throw new NoRouteError(json.error ?? "no route");
+
+    return {
+      source: "dflow",
+      label: "DFlow",
+      outAmount: String(json.outAmount),
+      outDecimals: req.outToken.decimals,
+      minOutAmount: json.otherAmountThreshold ? String(json.otherAmountThreshold) : undefined,
+      priceImpact:
+        json.priceImpactPct != null && Number(json.priceImpactPct) !== 0
+          ? String(json.priceImpactPct)
+          : undefined,
+      venues: dedupeVenues(
+        (json.routePlan ?? []).map((r: any) => r?.swapInfo?.label),
+      ),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Ekubo — Starknet AMM. Everything is in the PATH, not query params:
+//   /{chainId}/{amount}/{tokenIn}/{tokenOut}
+// and the chain id is the decimal form of Starknet's felt id.
+// ---------------------------------------------------------------------------
+
+/** Decimal form of Starknet mainnet's chain id (SN_MAIN as a felt). */
+const EKUBO_STARKNET_ID = "23448594291968334";
+
+const ekubo: QuoteAdapter = {
+  id: "ekubo",
+  label: "Ekubo",
+  blurb: "Starknet AMM",
+
+  supports(req) {
+    if (req.chain.code !== "starknet") return "Starknet only";
+    return true;
+  },
+
+  async quote(req, signal) {
+    const amount = toBaseUnits(req.amount, req.inToken.decimals);
+    const url =
+      `https://prod-api-quoter.ekubo.org/${EKUBO_STARKNET_ID}/${amount}/` +
+      `${req.inToken.address}/${req.outToken.address}`;
+
+    const { json } = await getJson(url, signal);
+    const out = json.total_calculated;
+    if (!out) throw new NoRouteError(json.message ?? "no route");
+
+    return {
+      source: "ekubo",
+      label: "Ekubo",
+      kind: "onchain",
+      outAmount: String(out),
+      outDecimals: req.outToken.decimals,
+      venues: dedupeVenues(["Ekubo"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
 /** Registry order = display order before ranking. */
 export const ADAPTERS: QuoteAdapter[] = [
   openocean,
@@ -2251,6 +3310,22 @@ export const ADAPTERS: QuoteAdapter[] = [
   balancer,
   wowmax,
   soroswap,
+  // Added later: bridges first, then per-ecosystem sources.
+  debridge,
+  across,
+  symbiosis,
+  oneinch,
+  raydium,
+  aftermath,
+  swapCoffee,
+  stonfi,
+  osmosis,
+  panora,
+  fly,
+  chainflip,
+  cetus,
+  dflow,
+  ekubo,
 ];
 
 export function adapterById(id: string) {

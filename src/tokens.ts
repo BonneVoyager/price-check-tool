@@ -154,6 +154,74 @@ const SEED_TOKENS: Record<string, UiToken[]> = {
     { address: "ETH:GBFXOHVAS43OIWNIO7XLRJAHT3BICFEIKOJLZVXNT572MISM4CMGSOCC", symbol: "ETH", name: "ETH", decimals: 7, isNative: false, isHot: true },
     { address: "PYUSD:GDQE7IXJ4HUHV6RQHIUPRJSEZE4DRS5WY577O2FY6YQ5LVWZ7JZTU2V5", symbol: "PYUSD", name: "PYUSD", decimals: 7, isNative: false, isHot: true },
   ],
+  /**
+   * Sui. Coin types are `pkg::module::TYPE`, not addresses. Decimals confirmed
+   * against Aftermath's coin-metadata endpoint.
+   */
+  sui: [
+    { address: "0x2::sui::SUI", symbol: "SUI", name: "Sui", decimals: 9, isNative: true, isHot: true },
+    { address: "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC", symbol: "USDC", name: "USD Coin", decimals: 6, isNative: false, isHot: true },
+    { address: "0x375f70cf2ae4c00bf37117d0c85a2c71545e6ee05c4a5c7d282cd66a4504b068::usdt::USDT", symbol: "USDT", name: "Tether USD", decimals: 6, isNative: false, isHot: true },
+    { address: "0x06864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS", symbol: "CETUS", name: "Cetus", decimals: 9, isNative: false, isHot: true },
+    { address: "0x356a26eb9e012a68958082340d4c4116e7f55615cf27affcff209cf0ae544f59::wal::WAL", symbol: "WAL", name: "Walrus", decimals: 9, isNative: false, isHot: true },
+  ],
+  /** Aptos. Coin types plus newer fungible-asset object addresses. */
+  aptos: [
+    { address: "0x1::aptos_coin::AptosCoin", symbol: "APT", name: "Aptos Coin", decimals: 8, isNative: true, isHot: true },
+    { address: "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b", symbol: "USDC", name: "USD Coin", decimals: 6, isNative: false, isHot: true },
+    { address: "0x357b0b74bc833e95a115ad22604854d6b0fca151cecd94111770e5d6ffc9dc2b", symbol: "USDT", name: "Tether USD", decimals: 6, isNative: false, isHot: true },
+  ],
+  /**
+   * TON. Jetton addresses are base64url (`EQ…`). The native coin is the literal
+   * "native" — STON.fi has no pool for it and substitutes wrapped pTON, which
+   * the adapter handles.
+   */
+  ton: [
+    { address: "native", symbol: "TON", name: "Toncoin", decimals: 9, isNative: true, isHot: true },
+    { address: "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs", symbol: "USDT", name: "Tether USD", decimals: 6, isNative: false, isHot: true },
+    { address: "EQC98_qAmNEptUtPc7W6xdHh_ZHrBUFpw5Ft_IzNU20QAJav", symbol: "tsTON", name: "Tonstakers TON", decimals: 9, isNative: false, isHot: true },
+    { address: "EQA2kCVNwVsil2EM2mB0SkXytxCqQjS4mttjDpnXmwG9T6bO", symbol: "STON", name: "STON", decimals: 9, isNative: false, isHot: true },
+  ],
+  /**
+   * Osmosis. Assets are DENOMS, not addresses — `uosmo`, `ibc/<hash>`, or
+   * `factory/<addr>/<sub>`. Verified against sqsprod.osmosis.zone/tokens/metadata.
+   */
+  osmosis: [
+    { address: "uosmo", symbol: "OSMO", name: "Osmosis", decimals: 6, isNative: true, isHot: true },
+    { address: "factory/osmo147h5x9pcj7lm0cttlaefx6sqq5vdfnmwfcqxkmjd7exqm9gc7grqhr75m0/alloyed/allUSDC", symbol: "USDC", name: "USDC (alloyed)", decimals: 6, isNative: false, isHot: true },
+    { address: "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2", symbol: "ATOM", name: "Cosmos Hub Atom", decimals: 6, isNative: false, isHot: true },
+    { address: "factory/osmo1em6xs47hd82806f5cxgyufguxrrc7l0aqx7nzzptjuqgswczk8csavdxek/alloyed/allBTC", symbol: "BTC", name: "Bitcoin (alloyed)", decimals: 8, isNative: false, isHot: true },
+  ],
+  /**
+   * Chains with a single native coin and no token contracts. The address IS the
+   * symbol — these are matched by symbol upstream (1Click's natives carry no
+   * contractAddress). Decimals verified against 1Click's /v0/tokens.
+   */
+  bitcoin: [
+    { address: "BTC", symbol: "BTC", name: "Bitcoin", decimals: 8, isNative: true, isHot: true },
+  ],
+  doge: [
+    { address: "DOGE", symbol: "DOGE", name: "Dogecoin", decimals: 8, isNative: true, isHot: true },
+  ],
+  litecoin: [
+    { address: "LTC", symbol: "LTC", name: "Litecoin", decimals: 8, isNative: true, isHot: true },
+  ],
+  bitcoincash: [
+    { address: "BCH", symbol: "BCH", name: "Bitcoin Cash", decimals: 8, isNative: true, isHot: true },
+  ],
+  zcash: [
+    { address: "ZEC", symbol: "ZEC", name: "Zcash", decimals: 8, isNative: true, isHot: true },
+  ],
+  dash: [
+    { address: "DASH", symbol: "DASH", name: "Dash", decimals: 8, isNative: true, isHot: true },
+  ],
+  cardano: [
+    { address: "ADA", symbol: "ADA", name: "Cardano", decimals: 6, isNative: true, isHot: true },
+  ],
+  tron: [
+    { address: "TRX", symbol: "TRX", name: "Tron", decimals: 6, isNative: true, isHot: true },
+    { address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", symbol: "USDT", name: "Tether USD", decimals: 6, isNative: false, isHot: true },
+  ],
   starknet: [
     { address: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7", symbol: "ETH", name: "Ether", decimals: 18, isNative: true, isHot: true },
     { address: "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8", symbol: "USDC", name: "USD Coin", decimals: 6, isNative: false, isHot: true },

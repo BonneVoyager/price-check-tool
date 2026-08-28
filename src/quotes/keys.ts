@@ -67,3 +67,21 @@ export const SOROSWAP_API_KEY: string = envOr(
   "SOROSWAP_API_KEY",
   "sk_ae72b141d7477805d0d8e8e2173e006dd3f1b7cf66590f5c5ee7111232ad192a",
 );
+
+/**
+ * Panora (Aptos) — the key below is the PUBLIC one Panora publishes in their own
+ * docs (docs.panora.exchange/developer/swap/api) for open use, so it is not a
+ * secret and shipping it in the bundle costs nothing. Override with
+ * PANORA_API_KEY to use your own.
+ */
+export const PANORA_API_KEY: string = envOr(
+  "PANORA_API_KEY",
+  "a4^KV_EaTf4MW#ZdvgGKX#HUD^3IFEAOV_kzpIE^3BQGA8pDnrkT7JcIy#HNlLGi",
+);
+
+/**
+ * 1inch — a free key from portal.1inch.dev. No literal on purpose: their API
+ * sends no CORS headers, so it can only be called server-side anyway, and a
+ * literal here would ship a personal key to every browser.
+ */
+export const ONEINCH_API_KEY: string = envOr("ONEINCH_API_KEY", "");
