@@ -58,8 +58,23 @@ js = js.trim().replace(exportRe, "");
 // 3. Swap the module script for an inline classic script.
 const html = await Bun.file(SRC_HTML).text();
 
-const MODULE_OPEN =
-  /<!--[\s\S]*?-->\s*<script type="module">\s*\nimport \{ OO \} from "\.\/app\.js";/;
+/**
+ * Anchor on the script tag alone.
+ *
+ * This used to be `<!--[\s\S]*?-->\s*<script type="module">…` so the comment
+ * above the script would be absorbed too. That was a latent trap: `[\s\S]*?`
+ * bridges from the FIRST comment anywhere in the file to the script tag, so as
+ * soon as a comment was added earlier in the body the match grew to swallow
+ * every element in between. It did exactly that — 7,939 characters of form
+ * markup, the whole `.actions` row included, disappeared from dist/index.html
+ * while the JS survived. The page then loaded and died on
+ * `$("btnCompare").onclick` with "Cannot set properties of null".
+ *
+ * Matching ONLY the script tag cannot swallow markup, whatever precedes it. The
+ * old comment is left in place — it is an HTML comment, so it is inert in the
+ * output, and that is a far better failure mode than losing the page.
+ */
+const MODULE_OPEN = /<script type="module">\s*\nimport \{ OO \} from "\.\/app\.js";/;
 if (!MODULE_OPEN.test(html)) {
   console.error(
     "Could not find the module <script> + import of ./app.js in public/index.html.\n" +
@@ -83,6 +98,42 @@ const single = html.replace(
 // Sanity: nothing should still point at the sibling file.
 if (/["']\.\/app\.js["']/.test(single)) {
   console.error("Output still references ./app.js — inlining did not take.");
+  process.exit(1);
+}
+
+/**
+ * Sanity: the PAGE must still be there.
+ *
+ * The rewrite above is a regex over the whole document, so a mis-anchored
+ * pattern can delete markup instead of just the script tag. That happened: an
+ * over-greedy comment prefix swallowed the entire form, and because the bundle
+ * itself survived, every existing check passed and a dead page shipped — it
+ * loaded, then threw "Cannot set properties of null" on the first handler.
+ *
+ * So assert the elements the app cannot run without. Cheap, and it turns a
+ * silent breakage into a failed build.
+ */
+const REQUIRED_IDS = [
+  "btnCompare",
+  "btnQuote",
+  "btnSwap",
+  "amount",
+  "slippage",
+  "gasPrice",
+  "account",
+  "chainPick",
+  "toChainPick",
+  "inPick",
+  "outPick",
+  "out",
+  "note",
+];
+const missing = REQUIRED_IDS.filter((id) => !single.includes(`id="${id}"`));
+if (missing.length) {
+  console.error(
+    `Output lost required element(s): ${missing.join(", ")}.\n` +
+      "The inlining regex is deleting markup — do not publish this build.",
+  );
   process.exit(1);
 }
 

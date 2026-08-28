@@ -1205,6 +1205,32 @@ runs.
 
 ---
 
+### The inlining regex once ate the page
+
+Worth recording, because it shipped and every existing check passed.
+
+`MODULE_OPEN` used to start with `<!--[\s\S]*?-->` so the explanatory comment
+above the module `<script>` would be replaced along with it. `[\s\S]*?` bridges
+from the **first** comment anywhere in the file to the script tag — so the moment
+a comment was added earlier in the body (the icon and hidden-field notes did it),
+the match grew to swallow every element in between: **7,939 characters**, the
+whole `.actions` row and both meta fields included.
+
+The bundle still inlined correctly, so `dist/index.html` looked plausible and the
+"no stray ./app.js" check passed. The page then loaded and died on the first
+handler with `Cannot set properties of null (setting 'onclick')`, taking the
+GitHub Pages deployment down while Vercel — which serves `public/`, not `dist/`
+— kept working. That asymmetry is what made it easy to miss.
+
+Two fixes:
+
+- `MODULE_OPEN` now matches **only** the script tag. It cannot swallow markup
+  whatever precedes it. The comment stays in the output, which is inert.
+- The build now asserts the elements the app cannot run without
+  (`btnCompare`, `amount`, `chainPick`, `out`, …) and fails with a named list if
+  any is missing. Verified by re-introducing the old regex: the build stops
+  instead of publishing a dead page.
+
 ## Deploying to Vercel
 
 **This is a static site — there is no server to run.** The page calls OpenOcean
