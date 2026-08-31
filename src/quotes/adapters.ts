@@ -13,6 +13,7 @@
 import { CHAINS, NATIVE, TON_NATIVE, type ChainInfo } from "../chains.ts";
 import {
   ENSO_API_KEY,
+  SQUID_INTEGRATOR_ID,
   ONEINCH_API_KEY,
   PANORA_API_KEY,
   SOROSWAP_API_KEY,
@@ -3289,6 +3290,109 @@ const ekubo: QuoteAdapter = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Squid — Axelar-based router, same-chain AND cross-chain across 82 chains
+// (25 EVM plus a large Cosmos set).
+//
+// Auth is an `x-integrator-id` header rather than a secret key; it is an
+// attribution identifier, and their docs publish ids for open use.
+//
+// Two behaviours worth knowing:
+//  - It rate-limits per fromAddress ("Too many quote requests for this
+//    address"), which the shared placeholder trips under fan-out. That surfaces
+//    as a normal error row rather than breaking the run.
+//  - Its same-chain pricing is noticeably worse than the dedicated same-chain
+//    aggregators (~2444 vs ~2500 USDC on 1 ETH when measured). It is a
+//    bridge-first router, so that is a real result, not a bug — the ranking
+//    shows it where it lands.
+// ---------------------------------------------------------------------------
+
+/** EVM chains from GET /v2/chains. Cosmos chains use string ids we don't carry. */
+/** A plain, well-known EOA. See the note in quote() for why not the shared one. */
+const SQUID_PLACEHOLDER = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+
+const SQUID_CHAINS = new Set([
+  1, 10, 56, 100, 137, 250, 252, 295, 314, 999, 143, 146, 1868, 2222, 3338,
+  5000, 8453, 13371, 42161, 42220, 43114, 59144, 80094, 81457, 534352,
+]);
+
+const squid: QuoteAdapter = {
+  id: "squid",
+  label: "Squid",
+  blurb: "Axelar router (same-chain + bridge)",
+  crossChain: true,
+
+  supports(req) {
+    for (const c of isCrossChain(req) ? [req.fromChain, req.toChain] : [req.chain]) {
+      if (!c.evm) return `${c.name} is not EVM`;
+      if (c.id == null || !SQUID_CHAINS.has(c.id)) return `${c.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url = "https://apiplus.squidrouter.com/v2/route";
+    // NOT the shared PLACEHOLDER_TAKER: that is a Binance hot wallet, and Squid
+    // screens exchange addresses — it answers 403 "swaps are currently
+    // unavailable" for it while quoting a plain EOA fine. Measured both ways.
+    const taker = req.account || SQUID_PLACEHOLDER;
+    let json: Record<string, any>;
+    try {
+      json = await postJson(
+      url,
+      {
+        fromAddress: taker,
+        fromChain: String(req.fromChain.id),
+        fromToken: req.inToken.address,
+        fromAmount: toBaseUnits(req.amount, req.inToken.decimals),
+        toChain: String(req.toChain.id),
+        toToken: req.outToken.address,
+        toAddress: taker,
+        slippage: Number(req.slippage || "1"),
+      },
+      signal,
+      { "x-integrator-id": SQUID_INTEGRATOR_ID },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/\b429\b|too many quote requests/i.test(msg)) {
+        throw new NoRouteError("Squid rate-limited this address — try again shortly");
+      }
+      throw err;
+    }
+
+    const est = json.route?.estimate;
+    if (!est?.toAmount) {
+      const msg = String(json.message ?? json.error ?? "no route");
+      // Their limiter keys on fromAddress, so back-to-back comparisons from one
+      // placeholder trip it. Say that, rather than implying no route exists.
+      if (/too many quote requests/i.test(msg)) {
+        throw new NoRouteError("Squid rate-limited this address — try again shortly");
+      }
+      throw new NoRouteError(msg);
+    }
+
+    return {
+      source: "squid",
+      label: "Squid",
+      outAmount: String(est.toAmount),
+      outDecimals: est.toToken?.decimals ?? req.outToken.decimals,
+      minOutAmount: est.toAmountMin ? String(est.toAmountMin) : undefined,
+      priceImpact:
+        est.aggregatePriceImpact != null && Number(est.aggregatePriceImpact) !== 0
+          ? String(est.aggregatePriceImpact)
+          : undefined,
+      // actions[] names each leg's provider — the bridge and any swap around it.
+      venues: dedupeVenues(
+        (est.actions ?? []).map((a: any) => a?.provider ?? a?.type),
+      ),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
 /** Registry order = display order before ranking. */
 export const ADAPTERS: QuoteAdapter[] = [
   openocean,
@@ -3326,6 +3430,7 @@ export const ADAPTERS: QuoteAdapter[] = [
   cetus,
   dflow,
   ekubo,
+  squid,
 ];
 
 export function adapterById(id: string) {

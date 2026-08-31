@@ -85,3 +85,14 @@ export const PANORA_API_KEY: string = envOr(
  * literal here would ship a personal key to every browser.
  */
 export const ONEINCH_API_KEY: string = envOr("ONEINCH_API_KEY", "");
+
+/**
+ * Squid — `x-integrator-id` is a public identifier, not a secret: it is how they
+ * attribute volume, and their own docs hand out ids for open use. `squid-api`
+ * was verified working. Ships in the bundle, which is fine; override with
+ * SQUID_INTEGRATOR_ID to attribute traffic to your own account.
+ */
+export const SQUID_INTEGRATOR_ID: string = envOr(
+  "SQUID_INTEGRATOR_ID",
+  "squid-api",
+);

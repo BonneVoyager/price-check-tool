@@ -1,6 +1,6 @@
 # Price Check Tool
 
-Compare swap quotes across **34 sources** — aggregators, DEX routers, RFQ market
+Compare swap quotes across **35 sources** — aggregators, DEX routers, RFQ market
 makers, solver networks and a direct on-chain pool read — on one pair, side by
 side, across **44 chains** (EVM, Solana, Sui, Aptos, NEAR, Starknet, Stellar).
 
@@ -371,7 +371,7 @@ prompt calls `syncUrl()` itself.
 Pick a different **To chain** and the same Compare button prices a bridge.
 `ETH` on Ethereum → `USDC` on Solana is one comparison, not a different mode.
 
-**Twelve** of the 34 sources bridge. The rest report `Same-chain only — cannot
+**Thirteen** of the 35 sources bridge. The rest report `Same-chain only — cannot
 bridge` as a neutral support gap, the same treatment a chain they don't cover
 gets. Verified live in both directions across VMs (EVM→SVM, SVM→EVM,
 EVM→Stellar).
@@ -577,6 +577,28 @@ Two details found by probing rather than reading:
 same fly.trade dropped earlier for 403ing under load; its *public* host
 (`api.fly.trade`) answers fine, and it does both same-chain and cross-chain.
 
+### Squid — and a placeholder that got us screened
+
+`POST apiplus.squidrouter.com/v2/route` with an `x-integrator-id` header. It
+covers 82 chains (25 EVM plus a large Cosmos set) and quotes **both** same-chain
+and cross-chain, routing over Axelar.
+
+Two things it taught us:
+
+- **It screens exchange addresses.** Our shared `PLACEHOLDER_TAKER` is a Binance
+  hot wallet, and Squid answers `403 "Apologies, swaps are currently
+  unavailable."` for it while quoting a plain EOA fine — measured both ways on
+  the same body. Squid therefore uses its own placeholder. Worth remembering for
+  any future source that does compliance screening on `fromAddress`.
+- **It rate-limits per `fromAddress`**, not per key, so back-to-back comparisons
+  from one placeholder trip `429 "Too many quote requests for this address"`.
+  That is reported as "Squid rate-limited this address" rather than "no route",
+  which would wrongly suggest the pair is unsupported.
+
+Its same-chain pricing sits below the dedicated same-chain aggregators (~2444 vs
+~2444.5 on 1 ETH when measured — competitive, but it is a bridge-first router).
+The ranking shows it where it lands.
+
 ### New same-chain routers
 
 **Raydium** (Solana AMM) and **DFlow** (Solana aggregator) — Solana went from 5
@@ -615,8 +637,12 @@ Each of these would have produced a silently wrong or missing row:
   loads fine and serves a shutdown-and-wallet-recovery notice.
 - **Socket V3** — keyless and CORS-open, but its shared public host rate-limited
   us (`429`) during verification. Worth revisiting.
-- **LayerZero VT** (Stargate's successor), **Hashflow**, **Clipper**, **Squid**,
-  **Rango**, **OKX DEX** — all key-gated with no self-service signup found.
+- **LayerZero VT** (Stargate's successor), **Hashflow**, **Clipper**, **Rango**,
+  **OKX DEX** — all key-gated with no self-service signup found.
+- **Squid** — I first listed this as key-gated on the strength of a `404` from a
+  guessed path. That was wrong: `POST apiplus.squidrouter.com/v2/route` is live
+  and CORS-open, and its `x-integrator-id` is an **attribution identifier, not a
+  secret** (their docs publish ids for open use). Now implemented — see below.
 - **Yield Yak** — no REST API by design; quoting is on-chain view calls only.
 - **Swing.xyz** — DNS gone entirely.
 - **Titan** — WebSocket + MessagePack, not REST.
