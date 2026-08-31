@@ -50,16 +50,24 @@ export interface NormalQuote {
   canExecute: boolean;
   /**
    * How the price was obtained:
-   *  - "api"     — an aggregator/router HTTP API (the default)
-   *  - "onchain" — read straight from a contract via RPC, no third-party API
+   *  - "api"     — an aggregator routing ACROSS venues (the default)
+   *  - "venue"   — a single protocol pricing its OWN pools
+   *  - "onchain" — a "venue" read straight from a contract via RPC, no API
    *  - "rfq"     — a market maker quoting a firm price
    *  - "intent"  — a solver auction; the price is a bid, not a route
    *
    * Surfaced as a tag in the UI, because it changes how much a number means:
-   * an on-chain read is ground truth for one pool, an intent bid may not
-   * materialise, and an RFQ is firm but only for that taker.
+   * a single venue is a baseline the aggregators should be beating, an intent
+   * bid may not materialise, and an RFQ is firm but only for that taker.
+   *
+   * "venue" vs "onchain" is a narrower distinction than it looks: both price one
+   * protocol's own liquidity, and they differ only in whether we read the chain
+   * ourselves or ask that protocol's API. `onchain` is the stronger claim — no
+   * third party is in the path at all — so it is reserved for adapters that
+   * genuinely do `eth_call`. Tagging a vendor's HTTP quote as `onchain` would
+   * overstate it, which is a mistake this file made for five sources.
    */
-  kind?: "api" | "onchain" | "rfq" | "intent";
+  kind?: "api" | "venue" | "onchain" | "rfq" | "intent";
 }
 
 /** Why a source produced no quote. Distinguishes "can't" from "broke". */

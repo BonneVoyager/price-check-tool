@@ -863,13 +863,45 @@ who provided it and changes how much the number means:
 
 | Tag | Meaning |
 |---|---|
-| `onchain` | read straight from the contract via RPC — no third-party API in the path. Ground truth for that pool. Currently only **Uniswap V3**. |
+| `onchain` | read straight from the contract via RPC — no third-party API in the path. Ground truth for that pool. Only **Uniswap V3**. |
+| `venue` | a single protocol pricing its **own** pools, via that protocol's API (**Balancer**, **Raydium**, **Cetus**, **Ekubo**, **STON.fi**, **Osmosis**). |
 | `intent` | a solver auction; the price is a *bid* that may not materialise (**CoW Swap**, **NEAR Intents**). |
 | `RFQ` | a market maker's firm price, but only for that taker (**Bebop**). |
-| *(no tag)* | a plain aggregator/router HTTP API — the default everything else is compared against. |
+| *(no tag)* | an aggregator routing **across** venues — the default everything else is compared against. |
 
 Set per adapter via `kind` on the returned quote, so a new source declares its
 own nature rather than the UI hardcoding a list.
+
+#### The `venue` tag exists because the old tagging was wrong
+
+`onchain` was applied to six sources, but five of them — Raydium, Cetus, Ekubo,
+STON.fi, Osmosis — call the **vendor's HTTP API**, not the chain. Only Uniswap V3
+does a real `eth_call`. Tagging a vendor's quote as `onchain` overstated it: the
+whole point of that tag is "no third party in the path", and there plainly was
+one.
+
+Meanwhile **Balancer** had no tag at all despite being the same kind of thing as
+the others — its SOR prices Balancer's own pools. The live responses make the
+split obvious:
+
+```
+Balancer   venues=[2 pools]                 ← its own liquidity
+Cetus      venues=[Cetus]                   ← its own liquidity
+Aftermath  venues=[Cetus, Aftermath]        ← routes across others
+KyberSwap  venues=[ekubo-v3, pancake-v3, …] ← routes across others
+```
+
+So the useful distinction is **single-venue vs aggregator**, not RPC vs HTTP.
+`venue` carries that, and `onchain` is now reserved for the stronger claim.
+
+This matters for reading the table: a `venue` or `onchain` row is a **baseline**,
+not a competitor. When an aggregator fails to beat a single pool, that is the
+interesting result.
+
+**Sushi is deliberately left untagged.** SushiSwap's router does route over
+external pools, but neither `/quote/v7` nor `/swap/v7` exposes the route, so
+there is no evidence either way — and guessing would assert something unverified
+about where the liquidity came from.
 
 ### WOWMAX without the dependency
 

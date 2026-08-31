@@ -427,6 +427,10 @@ summary:hover { color: var(--text); }
 
 /* Source-kind tags: how the price was obtained, not just who gave it. */
 .badge-sm.onchain { background: rgba(61,220,132,.16); color: var(--green); }
+/* `venue` sits next to `onchain` conceptually — both price one protocol's own
+   liquidity — so it shares the green family at lower emphasis, because it is the
+   weaker claim (the vendor's API, not our own chain read). */
+.badge-sm.venue   { background: rgba(61,220,132,.10); color: color-mix(in srgb, var(--green) 78%, var(--text-dim)); }
 .badge-sm.rfq     { background: rgba(255,180,84,.16); color: var(--amber); }
 /* Violet on purpose: the kind tags must stay separable from each other and
    from the teal accent, so this one does not follow the theme. */
@@ -1531,6 +1535,9 @@ function tokenFromParam(side, value) {
  * no tag, since that's the default everything else is compared against.
  */
 function kindTag(kind) {
+  if (kind === "venue") {
+    return '<span class="badge-sm venue" title="A single protocol pricing its own pools — a baseline the aggregators should be beating">venue</span>';
+  }
   if (kind === "onchain") {
     return '<span class="badge-sm onchain" title="Read directly from the contract via RPC — no third-party API">onchain</span>';
   }

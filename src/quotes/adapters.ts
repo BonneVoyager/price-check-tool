@@ -1852,6 +1852,10 @@ const sushi: QuoteAdapter = {
   id: "sushi",
   label: "Sushi",
   blurb: "SushiSwap router API",
+  // Left untagged (= "api") rather than "venue": SushiSwap's router does route
+  // over external pools, but neither /quote/v7 nor /swap/v7 exposes the route,
+  // so there is no evidence either way. Guessing a tag would assert something
+  // unverified about where the liquidity came from.
 
   supports(req) {
     if (!req.chain.evm) return `${req.chain.name} is not EVM`;
@@ -2025,6 +2029,10 @@ const balancer: QuoteAdapter = {
     const routeCount = sor.routes?.length ?? 0;
     return {
       source: "balancer",
+      // Balancer's SOR prices Balancer's OWN pools (the response reports
+      // "N pools"), so this is a single venue rather than an aggregator that
+      // routes across protocols.
+      kind: "venue",
       label: "Balancer",
       outAmount: toBaseUnits(String(human), req.outToken.decimals),
       outDecimals: req.outToken.decimals,
@@ -2586,7 +2594,7 @@ const raydium: QuoteAdapter = {
     return {
       source: "raydium",
       label: "Raydium",
-      kind: "onchain",
+      kind: "venue",
       outAmount: String(d.outputAmount),
       outDecimals: req.outToken.decimals,
       minOutAmount: d.otherAmountThreshold ? String(d.otherAmountThreshold) : undefined,
@@ -2764,7 +2772,7 @@ const stonfi: QuoteAdapter = {
     return {
       source: "stonfi",
       label: "STON.fi",
-      kind: "onchain",
+      kind: "venue",
       outAmount: String(json.ask_units),
       outDecimals: req.outToken.decimals,
       minOutAmount: json.min_ask_units ? String(json.min_ask_units) : undefined,
@@ -2809,7 +2817,7 @@ const osmosis: QuoteAdapter = {
     return {
       source: "osmosis",
       label: "Osmosis",
-      kind: "onchain",
+      kind: "venue",
       outAmount: String(json.amount_out),
       outDecimals: req.outToken.decimals,
       priceImpact: json.price_impact != null ? String(json.price_impact) : undefined,
@@ -3186,7 +3194,7 @@ const cetus: QuoteAdapter = {
     return {
       source: "cetus",
       label: "Cetus",
-      kind: "onchain",
+      kind: "venue",
       outAmount: String(out),
       outDecimals: req.outToken.decimals,
       venues: dedupeVenues(["Cetus"]),
@@ -3279,7 +3287,7 @@ const ekubo: QuoteAdapter = {
     return {
       source: "ekubo",
       label: "Ekubo",
-      kind: "onchain",
+      kind: "venue",
       outAmount: String(out),
       outDecimals: req.outToken.decimals,
       venues: dedupeVenues(["Ekubo"]),
