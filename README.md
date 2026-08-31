@@ -4,6 +4,8 @@ Compare swap quotes across **35 sources** — aggregators, DEX routers, RFQ mark
 makers, solver networks and a direct on-chain pool read — on one pair, side by
 side, across **44 chains** (EVM, Solana, Sui, Aptos, NEAR, Starknet, Stellar).
 
+![Screenshot](screen.png "Screenshot")
+
 Zero runtime dependencies. TypeScript + Bun, vanilla HTML/CSS/JS frontend.
 Only devDependency is `@types/bun`.
 
