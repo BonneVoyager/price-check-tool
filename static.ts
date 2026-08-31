@@ -16,6 +16,9 @@
  */
 
 import { getQuote, getSwapQuote } from "./src/openocean.ts";
+// The real Vercel function, mounted below so localhost exercises the SAME proxy
+// code (and the same env keys) as production rather than a local imitation.
+import proxyFn from "./api/proxy.ts";
 
 const ROOT = new URL("./public/", import.meta.url);
 
@@ -33,6 +36,23 @@ const server = Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
     const path = url.pathname;
+
+    /**
+     * The production proxy, served locally.
+     *
+     * Without this, a localhost page falls back to `REMOTE_PROXY` — the DEPLOYED
+     * Vercel function — so any key in your local `.env` is ignored and the
+     * deployed one is used instead (or, if that deployment lacks the target, the
+     * call goes out unauthenticated). That is confusing when you are testing a
+     * key locally: NEAR Intents would quietly keep paying its 0.2%
+     * unauthenticated fee no matter what you put in `.env`.
+     *
+     * Mounting the real handler means localhost reads your local env and takes
+     * the same path production does.
+     */
+    if (path === "/api/proxy") {
+      return (proxyFn as { fetch(req: Request): Promise<Response> }).fetch(req);
+    }
 
     // --- dev-only fallback for the Referer-gated endpoints -----------------
     if (path === "/api/quote" || path === "/api/swap") {

@@ -96,3 +96,18 @@ export const SQUID_INTEGRATOR_ID: string = envOr(
   "SQUID_INTEGRATOR_ID",
   "squid-api",
 );
+
+/**
+ * NEAR Intents (1Click) — a partner JWT from partners.near-intents.org.
+ *
+ * This one materially changes the PRICE, not just access: unauthenticated
+ * requests carry a 0.2% (20 bps) platform fee baked silently into `amountOut`,
+ * while authenticated ones pay only the 0.0001% protocol fee. Measured on
+ * 1 ETH -> USDC(base): 0.2646% implied cost with no key.
+ *
+ * No literal on purpose. It is a real secret, so it must never enter the browser
+ * bundle — the adapter routes through the proxy, which reads it from env. 1Click
+ * is CORS-open and even allows `x-api-key` from a browser, so the proxy hop
+ * exists purely to keep the key server-side.
+ */
+export const ONECLICK_API_KEY: string = envOr("ONECLICK_API_KEY", "");

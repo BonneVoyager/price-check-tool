@@ -13,6 +13,7 @@
 import { CHAINS, NATIVE, TON_NATIVE, type ChainInfo } from "../chains.ts";
 import {
   ENSO_API_KEY,
+  ONECLICK_API_KEY,
   SQUID_INTEGRATOR_ID,
   ONEINCH_API_KEY,
   PANORA_API_KEY,
@@ -1252,6 +1253,7 @@ const nearIntents: QuoteAdapter = {
     const deadline = new Date(Date.now() + 30 * 60_000).toISOString();
 
     const url = `${ONECLICK_BASE}/quote`;
+    const inBrowser = typeof window !== "undefined";
     // Initialised so the retry loop below can leave it unset on a double
     // failure without TypeScript losing track of it.
     let json: Record<string, any> = {};
@@ -1295,12 +1297,72 @@ const nearIntents: QuoteAdapter = {
           deadline,
     });
 
+    /**
+     * Send the quote request, authenticated where we can be.
+     *
+     * An unauthenticated 1Click quote carries a 0.2% (20 bps) platform fee
+     * folded silently into `amountOut` — it is not itemised anywhere in the
+     * response, it just makes the number worse. So every unauthenticated quote
+     * has been understating NEAR Intents by ~20 bps against the other sources.
+     *
+     * The JWT is a real secret, so the browser cannot hold it. Three paths:
+     *  - CLI/server with ONECLICK_API_KEY set → direct call with X-API-Key.
+     *  - Browser with the proxy up            → proxied, key stays server-side.
+     *  - Anything else                        → direct and unauthenticated,
+     *    which still quotes, just 20 bps worse. Better than no row at all.
+     *
+     * 1Click is CORS-open and even allows `x-api-key` from a browser, so the
+     * proxy hop is purely about not shipping the key.
+     */
+    const send = async (): Promise<Record<string, any>> => {
+      if (!inBrowser) {
+        return postJson(
+          url,
+          body(),
+          signal,
+          ONECLICK_API_KEY ? { "x-api-key": ONECLICK_API_KEY } : undefined,
+        );
+      }
+      if (await proxyAvailable()) {
+        const b = body();
+        const proxied = proxyUrl("oneclick", {
+          originAsset: b.originAsset,
+          destinationAsset: b.destinationAsset,
+          amount: b.amount,
+          refundTo: b.refundTo,
+          recipient: b.recipient,
+          deadline: b.deadline,
+          slippageTolerance: b.slippageTolerance,
+          depositMode: b.depositMode,
+        });
+        try {
+          const res = await fetch(proxied, { signal });
+          const text = await res.text();
+          const parsed = JSON.parse(text) as Record<string, any>;
+          // A quote came back (even a 4xx one 1Click itself produced) — use it.
+          if (parsed.quote || parsed.message) return parsed;
+          // Anything else is the PROXY failing, not 1Click: an older deployment
+          // without this target, a missing key, a 502. None of those are reasons
+          // to drop the source — fall through to the direct call, which still
+          // quotes, just with the 0.2% unauthenticated fee.
+          //
+          // This mattered in practice: the first version treated "Unknown
+          // target" as fatal and NEAR Intents vanished from the table, which is
+          // strictly worse than the 20 bps this change exists to remove.
+          throw new Error(String(parsed.error ?? `proxy HTTP ${res.status}`));
+        } catch {
+          return postJson(url, body(), signal);
+        }
+      }
+      return postJson(url, body(), signal);
+    };
+
     // Two attempts, then give up. Written as a loop so the success path below
     // is shared rather than duplicated into the retry branch.
     let lastBrokerMsg = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        json = await postJson(url, body(), signal);
+        json = await send();
         // A broker timeout can arrive as a normal body OR as a thrown non-2xx,
         // so both places have to recognise it.
         const m = String(json.message ?? "");

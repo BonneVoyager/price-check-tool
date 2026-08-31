@@ -135,9 +135,70 @@ const TARGETS = {
       };
     },
   },
+  /**
+   * NEAR Intents (1Click) — POST, unlike every other target.
+   *
+   * The hop exists ONLY to keep the JWT server-side: 1Click is CORS-open and
+   * explicitly allows `x-api-key` from a browser. But the key is worth hiding
+   * because it changes the price — an unauthenticated quote silently carries a
+   * 0.2% platform fee inside `amountOut`.
+   *
+   * The body is REBUILT here from named params rather than forwarded, so this
+   * stays an allowlist and not a relay: a caller cannot reach an arbitrary
+   * upstream or smuggle extra fields in.
+   */
+  oneclick: {
+    build(p: URLSearchParams) {
+      const key = process.env.ONECLICK_API_KEY ?? "";
+      if (!key) throw new Error("ONECLICK_API_KEY is not set on the proxy");
+
+      const need = (n: string) => {
+        const v = p.get(n);
+        if (!v) throw new Error(`missing ${n}`);
+        return v;
+      };
+      const slippage = Number(p.get("slippageTolerance") ?? "100");
+      if (!Number.isFinite(slippage) || slippage < 0 || slippage > 10_000) {
+        throw new Error("bad slippageTolerance");
+      }
+      const depositMode = p.get("depositMode") === "MEMO" ? "MEMO" : "SIMPLE";
+
+      return {
+        url: `https://1click.chaindefuser.com/v0/quote`,
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-api-key": key,
+        } as Record<string, string>,
+        body: JSON.stringify({
+          // Price-only. The proxy must never be able to commit a real swap, so
+          // `dry` is hardcoded rather than taken from the caller.
+          dry: true,
+          depositMode,
+          swapType: "EXACT_INPUT",
+          slippageTolerance: Math.round(slippage),
+          originAsset: need("originAsset"),
+          depositType: "ORIGIN_CHAIN",
+          destinationAsset: need("destinationAsset"),
+          amount: need("amount"),
+          refundTo: need("refundTo"),
+          refundType: "ORIGIN_CHAIN",
+          recipient: need("recipient"),
+          recipientType: "DESTINATION_CHAIN",
+          deadline: need("deadline"),
+        }),
+      };
+    },
+  },
 } satisfies Record<
   string,
-  { build(p: URLSearchParams): { url: string; headers: Record<string, string> } }
+  {
+    build(p: URLSearchParams): {
+      url: string;
+      headers: Record<string, string>;
+      body?: string;
+    };
+  }
 >;
 
 type TargetName = keyof typeof TARGETS;
@@ -186,7 +247,7 @@ async function handle(req: Request): Promise<Response> {
     );
   }
 
-  let built: { url: string; headers: Record<string, string> };
+  let built: { url: string; headers: Record<string, string>; body?: string };
   try {
     built = TARGETS[target].build(params);
   } catch (err) {
@@ -198,7 +259,10 @@ async function handle(req: Request): Promise<Response> {
     // but keep it under vercel.json's maxDuration and above the client's own
     // per-source timeout, so the client decides when to give up, not us.
     const upstream = await fetch(built.url, {
+      // A target that builds a body is a POST; the rest stay GETs.
+      method: built.body ? "POST" : "GET",
       headers: built.headers,
+      body: built.body,
       signal: AbortSignal.timeout(25_000),
     });
     const text = await upstream.text();

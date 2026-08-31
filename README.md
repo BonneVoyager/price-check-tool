@@ -512,6 +512,66 @@ All probed live before implementing. Ordered by what they unlock.
 **Bitcoin is the notable one** — Chainflip bridges native BTC, which no
 aggregator in the set can reach. 0.1 BTC → 7,919 USDC, verified.
 
+### The 20 bps you pay for not having a key
+
+1Click charges **0.2% (20 basis points)** on unauthenticated requests and nothing
+but the 0.0001% protocol fee on authenticated ones
+([their docs](https://docs.near-intents.org/resources/fees.md)). The fee is
+**not itemised anywhere in the response** — it is folded straight into
+`amountOut`, so an unauthenticated quote just looks worse. Measured on
+1 ETH → USDC(base): 0.2646% implied total cost with no key.
+
+That means every comparison so far has been understating NEAR Intents by ~20 bps
+against the other sources. Not a bug in the adapter, but a real distortion in
+the ranking.
+
+The JWT comes from the [Partner Dashboard](https://partners.near-intents.org/)
+and is sent as `X-API-Key` (`Authorization: Bearer` also works). Set it as
+`ONECLICK_API_KEY`.
+
+It is a **real secret**, so there is no literal in `keys.ts` and it must never
+enter the browser bundle. Three paths, in order:
+
+| Environment | Path | Fee |
+|---|---|---|
+| CLI / server with the key set | direct, `X-API-Key` | protocol only |
+| **`bun run dev` on localhost** | its own `/api/proxy`, reading your `.env` | protocol only |
+| Deployed Vercel | same-origin `/api/proxy`, reading Vercel's env | protocol only |
+| GitHub Pages | the deployed Vercel proxy | protocol only |
+| No key anywhere | direct, unauthenticated | **+0.2%** |
+
+**Localhost needed two changes to actually use the key.** `bun run dev` served
+only `/api/quote` and `/api/swap`, and `proxyBase()` sent every non-Vercel host
+to the *deployed* proxy — so a key in your local `.env` was ignored, and the call
+either used Vercel's key or went out unauthenticated. Now the dev server mounts
+the real `api/proxy.ts` handler and `proxyBase()` prefers `/api/proxy` on
+localhost, so local testing exercises the same code and the same env as
+production.
+
+Measured with a real partner JWT on 1 ETH → USDC(base):
+
+```
+unauthenticated  out=2443910196  total cost 0.2092%
+with the key     out=2447445071  total cost 0.0649%   → +14.5 bps
+```
+
+Worth noting the proxy hop is *purely* about hiding the key: 1Click is CORS-open
+and its preflight explicitly allows `x-api-key`, so a browser could send it
+directly — it just would not stay secret.
+
+Two details the implementation had to get right:
+
+- **The proxy target is POST**, unlike every other one, and the body is
+  **rebuilt server-side from named params** rather than forwarded. That keeps it
+  an allowlist rather than a relay, and `dry: true` is hardcoded there so the
+  proxy can never commit a real swap.
+- **Any proxy failure falls back to the direct call.** The first version treated
+  a proxy error as fatal, and because the deployed function did not yet have the
+  `oneclick` target, NEAR Intents disappeared from the table entirely — strictly
+  worse than the 20 bps this change exists to remove. An *invalid* key still
+  fails loudly (`Invalid token`), because silently paying the fee when you think
+  you are authenticated would be worse than an error.
+
 ### Two NEAR Intents faults, one ours and one theirs
 
 **`recipient is not valid` on TON — ours.** TON is unusually strict about the

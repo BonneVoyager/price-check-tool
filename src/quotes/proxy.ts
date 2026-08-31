@@ -52,12 +52,18 @@ export function proxyBase(): string {
   const host = currentHost();
   // Any *.vercel.app deployment of this project serves /api/proxy itself.
   if (host.endsWith(".vercel.app")) return "/api/proxy";
+  // `bun run dev` mounts the same function, so localhost uses its OWN proxy and
+  // therefore its own .env keys. Pointing at the deployed one instead would
+  // silently ignore a key you just set locally.
+  if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") {
+    return "/api/proxy";
+  }
   return REMOTE_PROXY;
 }
 
 /** Build a proxied URL for one of the allowlisted targets. */
 export function proxyUrl(
-  target: "openocean" | "zerox" | "zeroxCross" | "oneinch",
+  target: "openocean" | "zerox" | "zeroxCross" | "oneinch" | "oneclick",
   params: Record<string, string | number | undefined>,
 ): string {
   const qs = new URLSearchParams({ target });
