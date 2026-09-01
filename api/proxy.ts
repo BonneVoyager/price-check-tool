@@ -190,6 +190,50 @@ const TARGETS = {
       };
     },
   },
+  /**
+   * Haiku — POST, and needed for CORS rather than for a key: api.haiku.trade
+   * sends no access-control headers at all (its preflight 500s), so a browser
+   * cannot reach it directly. It currently answers unauthenticated.
+   *
+   * Rebuilt server-side from named params, like the other POST target, so the
+   * caller cannot smuggle a different intent through.
+   */
+  haiku: {
+    build(p: URLSearchParams) {
+      const need = (n: string) => {
+        const v = p.get(n);
+        if (!v) throw new Error(`missing ${n}`);
+        return v;
+      };
+      const slippage = Number(p.get("slippage") ?? "0.01");
+      if (!Number.isFinite(slippage) || slippage < 0 || slippage > 1) {
+        throw new Error("bad slippage");
+      }
+      const key = process.env.HAIKU_API_KEY ?? "";
+      return {
+        url: "https://api.haiku.trade/v1/quote",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          // Only sent if one is configured; the endpoint works without it today.
+          ...(key ? { "api-key": key } : {}),
+        } as Record<string, string>,
+        body: JSON.stringify({
+          intent: {
+            slippage,
+            receiver: need("receiver"),
+            inputPositions: {
+              [`${need("fromChain")}:${need("fromToken").toLowerCase()}`]:
+                need("amount"),
+            },
+            targetWeights: {
+              [`${need("toChain")}:${need("toToken").toLowerCase()}`]: 1,
+            },
+          },
+        }),
+      };
+    },
+  },
 } satisfies Record<
   string,
   {

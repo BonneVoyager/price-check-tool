@@ -111,3 +111,16 @@ export const SQUID_INTEGRATOR_ID: string = envOr(
  * exists purely to keep the key server-side.
  */
 export const ONECLICK_API_KEY: string = envOr("ONECLICK_API_KEY", "");
+
+/**
+ * Socket V3 (the API behind Bungee) — optional.
+ *
+ * Without it the adapter uses `public-backend`, which needs no key but is
+ * "testing and prototyping" per Socket's own docs and rate-limits hard. With a
+ * key it switches to `dedicated-backend` (20 rps, 100 for enterprise). Access is
+ * request-only via a Google Form, not self-service:
+ * https://docs.socket.tech/integrate/get-api-access
+ *
+ * No literal — a dedicated key is a real secret.
+ */
+export const SOCKET_API_KEY: string = envOr("SOCKET_API_KEY", "");

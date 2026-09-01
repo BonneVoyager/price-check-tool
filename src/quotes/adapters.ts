@@ -14,6 +14,7 @@ import { CHAINS, NATIVE, TON_NATIVE, type ChainInfo } from "../chains.ts";
 import {
   ENSO_API_KEY,
   ONECLICK_API_KEY,
+  SOCKET_API_KEY,
   SQUID_INTEGRATOR_ID,
   ONEINCH_API_KEY,
   PANORA_API_KEY,
@@ -3463,6 +3464,284 @@ const squid: QuoteAdapter = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Haiku — declarative cross-chain execution engine (haiku.trade). Same-chain
+// AND cross-chain across 18 EVM networks.
+//
+// Its request shape is unlike every other source here: instead of "swap A for
+// B" it takes an INTENT — `inputPositions` you supply and `targetWeights`
+// describing the portfolio you want, with weights summing to 1. A plain swap is
+// the degenerate case: one input, one target at weight 1.
+//
+// Two things worth recording:
+//  - Their docs say an API key is required ("contact contact@haiku.trade"), but
+//    /v1/quote answers unauthenticated — the 400 it returns is a VALIDATION
+//    error, not a 401. Verified on same-chain and cross-chain. If they close
+//    that later this adapter degrades to a normal error row.
+//  - Tokens are addressed as `alias:address` where the alias is Haiku's own
+//    short chain name, NOT a chain id. The list below was probed one alias at a
+//    time (a wrong one answers "Chain X not supported"), because their docs give
+//    chain IDs while the API wants names.
+// ---------------------------------------------------------------------------
+
+/** Haiku chain aliases, confirmed by probing. `hyperevm` is documented but was rejected. */
+const HAIKU_CHAINS: Record<string, string> = {
+  eth: "eth",
+  arbitrum: "arb",
+  base: "base",
+  optimism: "opt",
+  polygon: "poly",
+  avax: "avax",
+  bsc: "bsc",
+  xdai: "gnosis",
+  scroll: "scroll",
+  bera: "bera",
+  sonic: "sonic",
+  sei: "sei",
+  ape: "ape",
+};
+
+const haiku: QuoteAdapter = {
+  id: "haiku",
+  label: "Haiku",
+  blurb: "Declarative execution engine (no CORS)",
+  crossChain: true,
+
+  supports(req) {
+    for (const c of isCrossChain(req) ? [req.fromChain, req.toChain] : [req.chain]) {
+      if (!c.evm) return `${c.name} is not EVM`;
+      if (!HAIKU_CHAINS[c.code]) return `${c.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const inBrowser = typeof window !== "undefined";
+    const iid = (chain: ChainInfo, addr: string) =>
+      `${HAIKU_CHAINS[chain.code]}:${addr.toLowerCase()}`;
+
+    const intent = {
+      // Their slippage is a DECIMAL fraction (0.005 = 0.5%), not bps or percent.
+      slippage: Number(req.slippage || "1") / 100,
+      receiver: req.account || PLACEHOLDER_TAKER,
+      // Amount is human-readable here, not base units.
+      inputPositions: { [iid(req.fromChain, req.inToken.address)]: req.amount },
+      // One target at full weight = a plain swap.
+      targetWeights: { [iid(req.toChain, req.outToken.address)]: 1 },
+    };
+
+    let json: Record<string, any>;
+    let url: string;
+
+    if (inBrowser) {
+      // api.haiku.trade sends no CORS headers at all (its OPTIONS preflight
+      // 500s), so a browser can never call it directly — same situation as 0x.
+      if (!(await proxyAvailable())) {
+        throw new NoRouteError("Haiku needs the proxy (no CORS) — proxy unreachable");
+      }
+      url = proxyUrl("haiku", {
+        fromChain: HAIKU_CHAINS[req.fromChain.code],
+        fromToken: req.inToken.address,
+        toChain: HAIKU_CHAINS[req.toChain.code],
+        toToken: req.outToken.address,
+        amount: req.amount,
+        slippage: intent.slippage,
+        receiver: intent.receiver,
+      });
+      const res = await fetch(url, { signal });
+      const text = await res.text();
+      try {
+        json = JSON.parse(text) as Record<string, any>;
+      } catch {
+        throw new NoRouteError(`Non-JSON response (HTTP ${res.status})`);
+      }
+      if (!res.ok && json.error && !json.balances) {
+        throw new NoRouteError(String(json.error).slice(0, 90));
+      }
+    } else {
+      url = "https://api.haiku.trade/v1/quote";
+      json = await postJson(url, { intent }, signal);
+    }
+
+    const out = json.balances?.[0];
+    if (!out?.amount) {
+      throw new NoRouteError(String(json.error ?? json.message ?? "no route").slice(0, 90));
+    }
+
+    const decimals = out.token?.decimals ?? req.outToken.decimals;
+    return {
+      source: "haiku",
+      label: "Haiku",
+      kind: "intent",
+      // Decimal string, not base units — convert so ranking compares like sizes.
+      outAmount: toBaseUnits(String(out.amount), decimals),
+      outDecimals: decimals,
+      minOutAmount: out.amountMin
+        ? toBaseUnits(String(out.amountMin), decimals)
+        : undefined,
+      // `routes[]` carries only amounts — Haiku does not name the protocols it
+      // used, so there is nothing honest to put here but its own name.
+      venues: dedupeVenues(["Haiku engine"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Socket V3 (the API behind Bungee) — 39 chains, same-chain and cross-chain.
+//
+// Bungee's own API is formally deprecated: it answers 410 and names Socket V3
+// as its successor. So this IS Bungee, under the protocol's name.
+//
+// PROTOTYPE TIER, deliberately. `public-backend` needs no key, but Socket's own
+// docs call it "testing and prototyping" only, and it is aggressively rate
+// limited — 8 sequential requests measured 5 ok / 3 rate-limited, after which a
+// Cloudflare 429 persisted for minutes. Under a 36-source fan-out it will often
+// be a rate-limited row, so the message says so plainly rather than implying the
+// pair has no route.
+//
+// The production hosts (`backend`, `dedicated-backend`, 20-100 rps) are gated
+// behind a Google Form, not self-service. Set SOCKET_API_KEY once you have one
+// and the adapter uses the dedicated host automatically.
+//
+// Worth knowing when reading its row: Socket aggregates 30 bridges and 12 DEXes
+// (from /v3/swap/providers), and many are sources we already query DIRECTLY —
+// Across, NEAR Intents, Relay, Squid, Symbiosis, Mayan, 0x, Bebop, KyberSwap,
+// OpenOcean. A Socket win is often the same underlying route another row
+// already found, so it is not independent evidence.
+// ---------------------------------------------------------------------------
+
+/** Chains from GET /v3/swap/supported-chains, filtered to ones we carry. */
+const SOCKET_CHAINS = new Set([
+  1, 10, 56, 100, 130, 137, 143, 146, 324, 480, 999, 1101, 1329, 1868, 2741,
+  4663, 5000, 8453, 9745, 34443, 42161, 43114, 57073, 59144, 80094, 81457,
+  98866, 534352, 747474,
+]);
+
+const socket: QuoteAdapter = {
+  id: "socket",
+  label: "Bungee",
+  blurb: "Socket V3 — free tier, rate limited",
+  crossChain: true,
+
+  supports(req) {
+    for (const c of isCrossChain(req) ? [req.fromChain, req.toChain] : [req.chain]) {
+      if (!c.evm) return `${c.name} is not EVM`;
+      if (c.id == null || !SOCKET_CHAINS.has(c.id)) return `${c.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const taker = req.account || PLACEHOLDER_TAKER;
+    // A key upgrades us to the dedicated host; without one we stay on the
+    // shared public host and accept its limits.
+    const host = SOCKET_API_KEY
+      ? "https://dedicated-backend.socket.tech"
+      : "https://public-backend.socket.tech";
+
+    const url =
+      `${host}/v3/swap/quote?` +
+      qs({
+        userOps: "tx",
+        originChainId: req.fromChain.id ?? undefined,
+        destinationChainId: req.toChain.id ?? undefined,
+        inputToken: req.inToken.address,
+        inputAmount: toBaseUnits(req.amount, req.inToken.decimals),
+        outputToken: req.outToken.address,
+        userAddress: taker,
+        receiverAddress: taker,
+        // Percent with up to 3 decimals, per their spec — not bps.
+        slippage: Number(req.slippage || "1"),
+      });
+
+    const res = await fetch(url, {
+      signal,
+      headers: SOCKET_API_KEY ? { "x-api-key": SOCKET_API_KEY } : undefined,
+    });
+
+    if (res.status === 429) {
+      throw new NoRouteError(
+        "Socket's free tier rate-limited this request — needs an API key for reliable use",
+      );
+    }
+
+    const text = await res.text();
+    let json: Record<string, any>;
+    try {
+      json = JSON.parse(text) as Record<string, any>;
+    } catch {
+      // Their limiter serves a Cloudflare HTML page, not JSON.
+      throw new NoRouteError(`Non-JSON response (HTTP ${res.status})`);
+    }
+
+    const result = json.result ?? {};
+
+    /**
+     * Find the output amount without hardcoding a path.
+     *
+     * Socket's OpenAPI spec documents the request parameters but NOT the
+     * response body, and their rate limiter blocked repeated sampling, so the
+     * exact key ("autoRoute" vs "manualRoutes" vs "routes", and
+     * `output.amount` vs `outputAmount`) could not be pinned down from more
+     * than a single observation. Rather than hardcode a guess that silently
+     * yields no row when it is wrong, walk the result for the first
+     * output-shaped value and remember where it came from.
+     */
+    const found = (() => {
+      const seen: any[] = [];
+      const walk = (n: any, depth = 0): { amount: string; node: any } | null => {
+        if (!n || typeof n !== "object" || depth > 5) return null;
+        for (const key of ["output", "outputAmount", "toAmount", "receivedAmount"]) {
+          const v = (n as any)[key];
+          if (typeof v === "string" && /^\d+$/.test(v)) return { amount: v, node: n };
+          if (v && typeof v === "object" && typeof v.amount === "string" && /^\d+$/.test(v.amount)) {
+            return { amount: v.amount, node: n };
+          }
+        }
+        for (const v of Object.values(n)) {
+          if (Array.isArray(v)) {
+            for (const item of v) {
+              const hit = walk(item, depth + 1);
+              if (hit) return hit;
+            }
+          } else if (v && typeof v === "object" && !seen.includes(v)) {
+            seen.push(v);
+            const hit = walk(v, depth + 1);
+            if (hit) return hit;
+          }
+        }
+        return null;
+      };
+      return walk(result);
+    })();
+
+    if (!found) {
+      throw new NoRouteError(String(json.message ?? "no route").slice(0, 90));
+    }
+    const best = found.node;
+    const out = found.amount;
+
+    return {
+      source: "socket",
+      label: "Bungee",
+      outAmount: String(out),
+      outDecimals: best?.output?.token?.decimals ?? req.outToken.decimals,
+      minOutAmount: best?.minOutput?.amount
+        ? String(best.minOutput.amount)
+        : undefined,
+      venues: dedupeVenues([
+        best?.providerDetails?.name ?? best?.providerId ?? best?.routeDetails?.name,
+      ]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
 /** Registry order = display order before ranking. */
 export const ADAPTERS: QuoteAdapter[] = [
   openocean,
@@ -3501,6 +3780,8 @@ export const ADAPTERS: QuoteAdapter[] = [
   dflow,
   ekubo,
   squid,
+  haiku,
+  socket,
 ];
 
 export function adapterById(id: string) {

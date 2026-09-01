@@ -1,10 +1,10 @@
 # Price Check Tool
 
-Compare swap quotes across **35 sources** — aggregators, DEX routers, RFQ market
+Compare swap quotes across **37 sources** — aggregators, DEX routers, RFQ market
 makers, solver networks and a direct on-chain pool read — on one pair, side by
 side, across **44 chains** (EVM, Solana, Sui, Aptos, NEAR, Starknet, Stellar).
 
-![Screenshot](screen.png "Screenshot")
+![Screenshot](screenshot.png "Screenshot")
 
 Zero runtime dependencies. TypeScript + Bun, vanilla HTML/CSS/JS frontend.
 Only devDependency is `@types/bun`.
@@ -373,7 +373,7 @@ prompt calls `syncUrl()` itself.
 Pick a different **To chain** and the same Compare button prices a bridge.
 `ETH` on Ethereum → `USDC` on Solana is one comparison, not a different mode.
 
-**Thirteen** of the 35 sources bridge. The rest report `Same-chain only — cannot
+**Fifteen** of the 37 sources bridge. The rest report `Same-chain only — cannot
 bridge` as a neutral support gap, the same treatment a chain they don't cover
 gets. Verified live in both directions across VMs (EVM→SVM, SVM→EVM,
 EVM→Stellar).
@@ -661,6 +661,67 @@ Its same-chain pricing sits below the dedicated same-chain aggregators (~2444 vs
 ~2444.5 on 1 ETH when measured — competitive, but it is a bridge-first router).
 The ranking shows it where it lands.
 
+### Haiku — an intent API in portfolio terms
+
+[haiku.trade](https://haiku.trade) — a declarative execution engine over 18 EVM
+networks, same-chain and cross-chain. `POST api.haiku.trade/v1/quote`.
+
+Its request shape is unlike anything else here. Rather than "swap A for B" it
+takes an **intent**: `inputPositions` you supply, and `targetWeights` describing
+the portfolio you want, with the weights summing to 1. A plain swap is just the
+degenerate case — one input, one target at weight 1.
+
+Three things worth recording:
+
+- **The docs say you need an API key** ("contact `contact@haiku.trade`"), but
+  `/v1/quote` answers unauthenticated — the 400 it returns for a bad body is a
+  *validation* error, not a 401. Verified same-chain and cross-chain. The proxy
+  still forwards `HAIKU_API_KEY` if one is ever set, and the adapter degrades to
+  an ordinary error row if they close it.
+- **Tokens are `alias:address`**, where the alias is Haiku's own short chain name
+  and *not* a chain id — their docs list chain IDs while the API wants names. The
+  18 aliases were found by probing one at a time (a wrong one answers
+  `Chain X not supported`); `hyperevm` is documented but rejected.
+- **No CORS at all** — the preflight 500s — so like 0x and 1inch it needs the
+  proxy in a browser. Amounts are decimal strings on input and output, and
+  `slippage` is a fraction (`0.005` = 0.5%), not percent or bps.
+
+It does not name the protocols it routed through (`routes[]` carries only
+amounts), so the venue column reads "Haiku engine" rather than inventing detail.
+
+### Bungee / Socket V3 — added on the free tier, with eyes open
+
+**Bungee's own API is dead**: it answers `410` and names Socket V3 as its
+successor, so this row is Bungee under the protocol's name.
+
+`GET public-backend.socket.tech/v3/swap/quote` — 39 chains, same-chain and
+cross-chain, no key, CORS `*`. But Socket's
+[own docs](https://docs.socket.tech/integrate/get-api-access) call that host
+"testing and prototyping", and the rate limiting is real: 8 sequential requests
+measured **5 ok / 3 limited**, after which a Cloudflare `429` persisted for
+several minutes. Under a 37-source fan-out it will often be limited.
+
+So it is added deliberately as a prototype-tier source that **degrades to a
+neutral grey row** — *"Socket's free tier rate-limited this request — needs an
+API key for reliable use"* — rather than a red error implying the pair has no
+route. Set `SOCKET_API_KEY` and it switches to `dedicated-backend` (20 rps)
+automatically; that access is request-only via a Google Form, not self-service.
+
+Two implementation notes:
+
+- **Their OpenAPI spec documents the request but not the response**, and the
+  limiter blocked repeated sampling, so the exact route key (`autoRoute` vs
+  `manualRoutes` vs `routes`, `output.amount` vs `outputAmount`) could not be
+  pinned down from one observation. Rather than hardcode a guess that would
+  silently produce no row, the adapter **walks the result** for the first
+  output-shaped value. Verified against all three shapes plus the empty and 429
+  cases.
+- **Read its row with suspicion of double-counting.** `/v3/swap/providers`
+  reports 30 bridges and 12 DEXes, and many are sources we already query
+  directly — Across, NEAR Intents, Relay, Squid, Symbiosis, Mayan, 0x, Bebop,
+  KyberSwap, OpenOcean. A Bungee win is often the same underlying route another
+  row already found, so it is not independent evidence.
+
 ### New same-chain routers
 
 **Raydium** (Solana AMM) and **DFlow** (Solana aggregator) — Solana went from 5
@@ -697,8 +758,6 @@ Each of these would have produced a silently wrong or missing row:
 - **Odos — permanently shut down** (July 2026). I had earlier flagged its
   Cloudflare 530s as probably our sandbox IP; that was wrong. `app.odos.xyz`
   loads fine and serves a shutdown-and-wallet-recovery notice.
-- **Socket V3** — keyless and CORS-open, but its shared public host rate-limited
-  us (`429`) during verification. Worth revisiting.
 - **LayerZero VT** (Stargate's successor), **Hashflow**, **Clipper**, **Rango**,
   **OKX DEX** — all key-gated with no self-service signup found.
 - **Squid** — I first listed this as key-gated on the strength of a `404` from a

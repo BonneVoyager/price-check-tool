@@ -63,7 +63,8 @@ export function proxyBase(): string {
 
 /** Build a proxied URL for one of the allowlisted targets. */
 export function proxyUrl(
-  target: "openocean" | "zerox" | "zeroxCross" | "oneinch" | "oneclick",
+  target: "openocean" | "zerox" | "zeroxCross" | "oneinch" | "oneclick"
+    | "haiku",
   params: Record<string, string | number | undefined>,
 ): string {
   const qs = new URLSearchParams({ target });
