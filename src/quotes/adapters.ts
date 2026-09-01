@@ -3591,10 +3591,13 @@ const haiku: QuoteAdapter = {
 };
 
 // ---------------------------------------------------------------------------
-// Socket V3 (the API behind Bungee) — 39 chains, same-chain and cross-chain.
+// Socket V3 — 39 chains, same-chain and cross-chain.
 //
-// Bungee's own API is formally deprecated: it answers 410 and names Socket V3
-// as its successor. So this IS Bungee, under the protocol's name.
+// Named "Socket", not "Bungee". Bungee is the consumer app; Socket is the
+// protocol and the thing we actually call
+// (dedicated-backend.socket.tech/v3/swap/quote). The Bungee API is DEPRECATED —
+// it answers 410 and points at Socket V3 — so labelling the row "Bungee" named
+// the dead endpoint and misdescribed where the quote came from.
 //
 // PROTOTYPE TIER, deliberately. `public-backend` needs no key, but Socket's own
 // docs call it "testing and prototyping" only, and it is aggressively rate
@@ -3623,8 +3626,8 @@ const SOCKET_CHAINS = new Set([
 
 const socket: QuoteAdapter = {
   id: "socket",
-  label: "Bungee",
-  blurb: "Socket V3 — free tier, rate limited",
+  label: "Socket",
+  blurb: "Socket V3 (formerly Bungee)",
   crossChain: true,
 
   supports(req) {
@@ -3714,7 +3717,7 @@ const socket: QuoteAdapter = {
 
     return {
       source: "socket",
-      label: "Bungee",
+      label: "Socket",
       outAmount: String(out),
       outDecimals: best.output?.token?.decimals ?? req.outToken.decimals,
       minOutAmount: best.output?.minAmount ? String(best.output.minAmount) : undefined,

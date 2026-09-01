@@ -689,10 +689,13 @@ Three things worth recording:
 It does not name the protocols it routed through (`routes[]` carries only
 amounts), so the venue column reads "Haiku engine" rather than inventing detail.
 
-### Bungee / Socket V3 — added on the free tier, with eyes open
+### Socket V3 (formerly Bungee)
 
-**Bungee's own API is dead**: it answers `410` and names Socket V3 as its
-successor, so this row is Bungee under the protocol's name.
+**The row is labelled "Socket", not "Bungee", deliberately.** Bungee is the
+consumer app; Socket is the protocol, and `socket.tech` is what we actually
+call. The **Bungee API is deprecated** — it answers `410` and points at Socket
+V3 — so naming the row after it would have pointed at the dead endpoint and
+misdescribed where the quote came from.
 
 `GET public-backend.socket.tech/v3/swap/quote` — 39 chains, same-chain and
 cross-chain, no key, CORS `*`. But Socket's
@@ -719,7 +722,7 @@ Two implementation notes:
 - **Read its row with suspicion of double-counting.** `/v3/swap/providers`
   reports 30 bridges and 12 DEXes, and many are sources we already query
   directly — Across, NEAR Intents, Relay, Squid, Symbiosis, Mayan, 0x, Bebop,
-  KyberSwap, OpenOcean. A Bungee win is often the same underlying route another
+  KyberSwap, OpenOcean. A Socket win is often the same underlying route another
   row already found, so it is not independent evidence.
 
 ### New same-chain routers
@@ -808,7 +811,7 @@ the CLI only. Excluded after testing, with the reason:
 |---|---|
 | Odos | CORS-blocked from the browser |
 | Magpie, Rango | `403` Cloudflare challenge |
-| Socket/Bungee | `401` — API key required |
+| Socket | now implemented — see [Socket V3](#socket-v3-formerly-bungee) |
 | Squid | `x-integrator-id` header required |
 | Firebird, Swing | host unreachable |
 | Curve | pool data only, no quote endpoint |
