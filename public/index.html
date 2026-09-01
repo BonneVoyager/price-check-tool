@@ -837,7 +837,7 @@ const chainRow = (c, i, on, sel) => `
       <div class="opt-sym">${esc(c.name)}</div>
       <div class="opt-nm">${esc(c.code)}${c.id ? ` · chain id ${c.id}` : ""}</div>
     </span>
-    ${c.evm ? "" : `<span class="pill evm">non-EVM</span>`}
+    ${c.evm ? "" : `<span class="pill evm" title="Not an EVM chain — addresses and sources differ">non-EVM</span>`}
   </div>`;
 
 const tokenRow = (t, i, on, sel) => `
@@ -847,9 +847,9 @@ const tokenRow = (t, i, on, sel) => `
       <div class="opt-sym">${esc(t.symbol)}</div>
       <div class="opt-nm">${esc(t.isCustom ? t.address : t.name || short(t.address))}</div>
     </span>
-    ${t.isCustom ? `<span class="pill custom">unlisted</span>`
-      : t.isNative ? `<span class="pill native">native</span>`
-      : t.isHot ? `<span class="pill hot">hot</span>` : ""}
+    ${t.isCustom ? `<span class="pill custom" title="Not in the token list — resolved from the address">unlisted</span>`
+      : t.isNative ? `<span class="pill native" title="The chain\u2019s own coin, not a token contract">native</span>`
+      : t.isHot ? `<span class="pill hot" title="Commonly traded on this chain">hot</span>` : ""}
     ${t.usd != null ? `<span class="opt-usd">$${esc(String(t.usd))}</span>` : ""}
   </div>`;
 
@@ -1536,16 +1536,16 @@ function tokenFromParam(side, value) {
  */
 function kindTag(kind) {
   if (kind === "venue") {
-    return '<span class="badge-sm venue" title="A single protocol pricing its own pools — a baseline the aggregators should be beating">venue</span>';
+    return '<span class="badge-sm venue" title="One protocol\u2019s own pools \u2014 a baseline, not a competitor">venue</span>';
   }
   if (kind === "onchain") {
-    return '<span class="badge-sm onchain" title="Read directly from the contract via RPC — no third-party API">onchain</span>';
+    return '<span class="badge-sm onchain" title="Read from the contract via RPC \u2014 no API in the path">onchain</span>';
   }
   if (kind === "rfq") {
-    return '<span class="badge-sm rfq" title="Firm price quoted by a market maker for this taker">RFQ</span>';
+    return '<span class="badge-sm rfq" title="A market maker\u2019s firm price \u2014 only for this taker">RFQ</span>';
   }
   if (kind === "intent") {
-    return '<span class="badge-sm intent" title="Solver auction — the price is a bid, not a computed route">intent</span>';
+    return '<span class="badge-sm intent" title="A solver\u2019s bid, not a computed route \u2014 may not fill">intent</span>';
   }
   return "";
 }
@@ -1559,7 +1559,7 @@ function cmpRowSuccess(r, isWin) {
       <td><div class="src">
         <span class="rk ${isWin ? "g1" : ""}">${r.rank}</span>
         <span><span class="nm">${esc(o.label)}</span>${kindTag(o.kind)}
-        ${o.canExecute ? "" : '<span class="badge-sm na" title="Quote only in this app">quote only</span>'}
+        ${o.canExecute ? "" : '<span class="badge-sm na" title="Price only \u2014 this app never builds a transaction">quote only</span>'}
         <div class="bl">${esc(venues || "—")}${more}</div></span>
       </div></td>
       <td class="amt">${r.human.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
@@ -1568,11 +1568,24 @@ function cmpRowSuccess(r, isWin) {
     </tr>`;
 }
 
+/**
+ * Why a source produced no number. The grey/red split already says "their fault
+ * vs not a fault", but the word alone is ambiguous — "n/a" in particular could
+ * mean anything — so each carries its own tooltip.
+ */
+const FAILURE_TITLES = {
+  "no-route": "Covers this pair but found no liquidity path",
+  unsupported: "Doesn\u2019t serve this chain or pair \u2014 not a failure",
+  error: "The request failed \u2014 network, auth or a bad response",
+  timeout: "Took too long and was given up on",
+};
+
 function cmpRowFailure(f) {
   const isErr = f.kind === "error" || f.kind === "timeout";
+  const title = esc(FAILURE_TITLES[f.kind] ?? "No quote returned");
   const badge = isErr
-    ? `<span class="badge-sm er">${esc(f.kind)}</span>`
-    : `<span class="badge-sm na">${f.kind === "no-route" ? "no route" : "n/a"}</span>`;
+    ? `<span class="badge-sm er" title="${title}">${esc(f.kind)}</span>`
+    : `<span class="badge-sm na" title="${title}">${f.kind === "no-route" ? "no route" : "n/a"}</span>`;
   return `
     <tr class="out">
       <td><div class="src">
