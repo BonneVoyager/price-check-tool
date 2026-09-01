@@ -14,6 +14,7 @@ import { CHAINS, NATIVE, TON_NATIVE, type ChainInfo } from "../chains.ts";
 import {
   ENSO_API_KEY,
   ONECLICK_API_KEY,
+  SOCKET_AFFILIATE,
   SOCKET_API_KEY,
   SQUID_INTEGRATOR_ID,
   ONEINCH_API_KEY,
@@ -3636,9 +3637,13 @@ const socket: QuoteAdapter = {
 
   async quote(req, signal) {
     const taker = req.account || PLACEHOLDER_TAKER;
-    // A key upgrades us to the dedicated host; without one we stay on the
-    // shared public host and accept its limits.
-    const host = SOCKET_API_KEY
+    // The dedicated host needs BOTH a key and an affiliate id — it rejects a
+    // request with only the key ("Affiliate header is required") and rejects a
+    // guessed affiliate ("Unrecognized affiliate"), and both are issued together
+    // by Socket. With only one of the two, staying on the rate-limited public
+    // host still produces quotes, which beats a guaranteed 400.
+    const dedicated = Boolean(SOCKET_API_KEY && SOCKET_AFFILIATE);
+    const host = dedicated
       ? "https://dedicated-backend.socket.tech"
       : "https://public-backend.socket.tech";
 
@@ -3659,12 +3664,16 @@ const socket: QuoteAdapter = {
 
     const res = await fetch(url, {
       signal,
-      headers: SOCKET_API_KEY ? { "x-api-key": SOCKET_API_KEY } : undefined,
+      headers: dedicated
+        ? { "x-api-key": SOCKET_API_KEY, affiliate: SOCKET_AFFILIATE }
+        : undefined,
     });
 
     if (res.status === 429) {
       throw new NoRouteError(
-        "Socket's free tier rate-limited this request — needs an API key for reliable use",
+        dedicated
+          ? "Socket rate-limited this request — try again shortly"
+          : "Socket's free tier rate-limited this — set SOCKET_AFFILIATE too for the dedicated host",
       );
     }
 
@@ -3680,60 +3689,38 @@ const socket: QuoteAdapter = {
     const result = json.result ?? {};
 
     /**
-     * Find the output amount without hardcoding a path.
+     * Pick the best of `routes[]`.
      *
-     * Socket's OpenAPI spec documents the request parameters but NOT the
-     * response body, and their rate limiter blocked repeated sampling, so the
-     * exact key ("autoRoute" vs "manualRoutes" vs "routes", and
-     * `output.amount` vs `outputAmount`) could not be pinned down from more
-     * than a single observation. Rather than hardcode a guess that silently
-     * yields no row when it is wrong, walk the result for the first
-     * output-shaped value and remember where it came from.
+     * Two things the live response makes clear, both of which a naive read gets
+     * wrong:
+     *  - The array is NOT sorted by output. In a 9-route sample the 4th beat the
+     *    3rd, so taking routes[0] would silently under-report Socket.
+     *  - The provider name is nested at
+     *    `routeDetails.bridgeDetails.protocol.name` (or `dexDetails` for a
+     *    same-chain route), not at the top level.
      */
-    const found = (() => {
-      const seen: any[] = [];
-      const walk = (n: any, depth = 0): { amount: string; node: any } | null => {
-        if (!n || typeof n !== "object" || depth > 5) return null;
-        for (const key of ["output", "outputAmount", "toAmount", "receivedAmount"]) {
-          const v = (n as any)[key];
-          if (typeof v === "string" && /^\d+$/.test(v)) return { amount: v, node: n };
-          if (v && typeof v === "object" && typeof v.amount === "string" && /^\d+$/.test(v.amount)) {
-            return { amount: v.amount, node: n };
-          }
-        }
-        for (const v of Object.values(n)) {
-          if (Array.isArray(v)) {
-            for (const item of v) {
-              const hit = walk(item, depth + 1);
-              if (hit) return hit;
-            }
-          } else if (v && typeof v === "object" && !seen.includes(v)) {
-            seen.push(v);
-            const hit = walk(v, depth + 1);
-            if (hit) return hit;
-          }
-        }
-        return null;
-      };
-      return walk(result);
-    })();
+    const routes: any[] = Array.isArray(result.routes) ? result.routes : [];
+    const best = routes
+      .filter((r) => /^\d+$/.test(String(r?.output?.amount ?? "")))
+      .sort((a, b) => (BigInt(b.output.amount) > BigInt(a.output.amount) ? 1 : -1))[0];
 
-    if (!found) {
-      throw new NoRouteError(String(json.message ?? "no route").slice(0, 90));
+    if (!best) {
+      // They explain refusals in quoteRejections, which is more useful than a
+      // bare "no route".
+      const why = result.quoteRejections?.[0]?.reason;
+      throw new NoRouteError(String(why ?? json.message ?? "no route").slice(0, 90));
     }
-    const best = found.node;
-    const out = found.amount;
+    const out = String(best.output.amount);
 
     return {
       source: "socket",
       label: "Bungee",
       outAmount: String(out),
-      outDecimals: best?.output?.token?.decimals ?? req.outToken.decimals,
-      minOutAmount: best?.minOutput?.amount
-        ? String(best.minOutput.amount)
-        : undefined,
+      outDecimals: best.output?.token?.decimals ?? req.outToken.decimals,
+      minOutAmount: best.output?.minAmount ? String(best.output.minAmount) : undefined,
       venues: dedupeVenues([
-        best?.providerDetails?.name ?? best?.providerId ?? best?.routeDetails?.name,
+        best.routeDetails?.bridgeDetails?.protocol?.name ??
+          best.routeDetails?.dexDetails?.protocol?.name,
       ]),
       url,
       ms: 0,

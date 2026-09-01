@@ -404,6 +404,10 @@ summary:hover { color: var(--text); }
 .cmp .dlt { font: 11.5px/1 var(--mono); text-align: right; white-space: nowrap; }
 .cmp .dlt.best { color: var(--green); font-weight: 600; }
 .cmp .dlt.worse { color: var(--text-dim); }
+/* bps sits beside the percentage as the same measurement in trader units, so it
+   is deliberately quieter — it must not compete with the primary figure. */
+.cmp .dlt.bps { color: var(--text-faint); font-size: 11px; }
+.cmp .dlt.bps.best { color: var(--text-faint); font-weight: 400; }
 .cmp .vn { font: 11px/1.4 var(--mono); color: var(--text-dim); }
 .cmp .ms { font: 11px/1 var(--mono); color: var(--text-faint); text-align: right; }
 .rk {
@@ -415,6 +419,52 @@ summary:hover { color: var(--text); }
 .badge-sm {
   font: 700 8.5px/1 var(--sans); text-transform: uppercase; letter-spacing: .04em;
   padding: 3px 5px; border-radius: 4px; margin-left: 6px;
+}
+
+/* --- tooltips -------------------------------------------------------------
+   Native `title` works but gives no hint a tag is hoverable and waits ~1s
+   before showing, so most people never discover it. These are CSS-only: the
+   text lives in `data-tip`, so there is no JS, no positioning library, and
+   nothing to keep in sync with the markup.
+   ------------------------------------------------------------------------ */
+[data-tip] { position: relative; cursor: help; }
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute; bottom: calc(100% + 7px); left: 50%;
+  transform: translateX(-50%) translateY(3px);
+  /* Wide enough for one comfortable line, but wraps rather than overflowing. */
+  width: max-content; max-width: 250px; white-space: normal;
+  padding: 7px 9px; border-radius: 7px;
+  background: var(--surface-3); color: var(--text);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 20px rgba(0,0,0,.28);
+  font: 400 11.5px/1.45 var(--sans); text-transform: none; letter-spacing: 0;
+  opacity: 0; pointer-events: none;
+  transition: opacity .12s ease, transform .12s ease;
+  z-index: 20;
+}
+[data-tip]::before {
+  content: ""; position: absolute; bottom: calc(100% + 2px); left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: var(--line);
+  opacity: 0; pointer-events: none; transition: opacity .12s ease;
+  z-index: 21;
+}
+[data-tip]:hover::after, [data-tip]:focus-visible::after {
+  opacity: 1; transform: translateX(-50%) translateY(0);
+}
+[data-tip]:hover::before, [data-tip]:focus-visible::before { opacity: 1; }
+
+/* A row's first tag sits near the left edge; nudge its tooltip inward so it
+   cannot clip off-screen. Same for the last column on the right. */
+.src [data-tip]:first-of-type::after { left: 0; transform: translateX(0) translateY(3px); }
+.src [data-tip]:first-of-type:hover::after { transform: translateX(0) translateY(0); }
+.src [data-tip]:first-of-type::before { left: 18px; }
+
+/* Touch devices have no hover: the tooltip would need a tap that also does
+   nothing else, so leave them the native title instead. */
+@media (hover: none) {
+  [data-tip]::after, [data-tip]::before { display: none; }
 }
 .badge-sm.na { background: var(--surface-3); color: var(--text-faint); }
 .badge-sm.er { background: rgba(255,95,86,.14); color: var(--red); }
@@ -837,7 +887,7 @@ const chainRow = (c, i, on, sel) => `
       <div class="opt-sym">${esc(c.name)}</div>
       <div class="opt-nm">${esc(c.code)}${c.id ? ` · chain id ${c.id}` : ""}</div>
     </span>
-    ${c.evm ? "" : `<span class="pill evm" title="Not an EVM chain — addresses and sources differ">non-EVM</span>`}
+    ${c.evm ? "" : `<span class="pill evm" title="Not an EVM chain — addresses and sources differ" data-tip="Not an EVM chain — addresses and sources differ">non-EVM</span>`}
   </div>`;
 
 const tokenRow = (t, i, on, sel) => `
@@ -847,9 +897,9 @@ const tokenRow = (t, i, on, sel) => `
       <div class="opt-sym">${esc(t.symbol)}</div>
       <div class="opt-nm">${esc(t.isCustom ? t.address : t.name || short(t.address))}</div>
     </span>
-    ${t.isCustom ? `<span class="pill custom" title="Not in the token list — resolved from the address">unlisted</span>`
-      : t.isNative ? `<span class="pill native" title="The chain\u2019s own coin, not a token contract">native</span>`
-      : t.isHot ? `<span class="pill hot" title="Commonly traded on this chain">hot</span>` : ""}
+    ${t.isCustom ? `<span class="pill custom" title="Not in the token list — resolved from the address" data-tip="Not in the token list — resolved from the address">unlisted</span>`
+      : t.isNative ? `<span class="pill native" title="The chain\u2019s own coin, not a token contract" data-tip="The chain\u2019s own coin, not a token contract">native</span>`
+      : t.isHot ? `<span class="pill hot" title="Commonly traded on this chain" data-tip="Commonly traded on this chain">hot</span>` : ""}
     ${t.usd != null ? `<span class="opt-usd">$${esc(String(t.usd))}</span>` : ""}
   </div>`;
 
@@ -1536,18 +1586,36 @@ function tokenFromParam(side, value) {
  */
 function kindTag(kind) {
   if (kind === "venue") {
-    return '<span class="badge-sm venue" title="One protocol\u2019s own pools \u2014 a baseline, not a competitor">venue</span>';
+    return '<span class="badge-sm venue" title="One protocol\u2019s own pools \u2014 a baseline, not a competitor" data-tip="One protocol\u2019s own pools \u2014 a baseline, not a competitor">venue</span>';
   }
   if (kind === "onchain") {
-    return '<span class="badge-sm onchain" title="Read from the contract via RPC \u2014 no API in the path">onchain</span>';
+    return '<span class="badge-sm onchain" title="Read from the contract via RPC \u2014 no API in the path" data-tip="Read from the contract via RPC \u2014 no API in the path">onchain</span>';
   }
   if (kind === "rfq") {
-    return '<span class="badge-sm rfq" title="A market maker\u2019s firm price \u2014 only for this taker">RFQ</span>';
+    return '<span class="badge-sm rfq" title="A market maker\u2019s firm price \u2014 only for this taker" data-tip="A market maker\u2019s firm price \u2014 only for this taker">RFQ</span>';
   }
   if (kind === "intent") {
-    return '<span class="badge-sm intent" title="A solver\u2019s bid, not a computed route \u2014 may not fill">intent</span>';
+    return '<span class="badge-sm intent" title="A solver\u2019s bid, not a computed route \u2014 may not fill" data-tip="A solver\u2019s bid, not a computed route \u2014 may not fill">intent</span>';
   }
   return "";
+}
+
+/**
+ * Basis points, alongside the percentage.
+ *
+ * Derived from the SAME `deltaPct` the percent column uses, rather than
+ * recomputed from the amounts — two independent calculations of the same figure
+ * are two chances to disagree.
+ *
+ * Rounded to whole bps: sub-bp precision is noise at these sizes, and the
+ * percent column already carries three decimals for anyone who wants finer
+ * detail. Deltas here are negative (worse than best), so the sign is kept.
+ */
+function fmtBps(deltaPct) {
+  const bps = deltaPct * 100;
+  // Below half a bp, "0" would read as "identical" when it is merely tiny.
+  if (bps !== 0 && Math.abs(bps) < 0.5) return bps > 0 ? "<1" : ">-1";
+  return Math.round(bps).toString();
 }
 
 function cmpRowSuccess(r, isWin) {
@@ -1559,11 +1627,12 @@ function cmpRowSuccess(r, isWin) {
       <td><div class="src">
         <span class="rk ${isWin ? "g1" : ""}">${r.rank}</span>
         <span><span class="nm">${esc(o.label)}</span>${kindTag(o.kind)}
-        ${o.canExecute ? "" : '<span class="badge-sm na" title="Price only \u2014 this app never builds a transaction">quote only</span>'}
+        ${o.canExecute ? "" : '<span class="badge-sm na" title="Price only \u2014 this app never builds a transaction" data-tip="Price only \u2014 this app never builds a transaction">quote only</span>'}
         <div class="bl">${esc(venues || "—")}${more}</div></span>
       </div></td>
       <td class="amt">${r.human.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
       <td class="dlt ${isWin ? "best" : "worse"}">${isWin ? "best" : r.deltaPct.toFixed(3) + "%"}</td>
+      <td class="dlt bps ${isWin ? "best" : "worse"}">${isWin ? "—" : fmtBps(r.deltaPct)}</td>
       <td class="ms">${o.ms}ms</td>
     </tr>`;
 }
@@ -1584,8 +1653,8 @@ function cmpRowFailure(f) {
   const isErr = f.kind === "error" || f.kind === "timeout";
   const title = esc(FAILURE_TITLES[f.kind] ?? "No quote returned");
   const badge = isErr
-    ? `<span class="badge-sm er" title="${title}">${esc(f.kind)}</span>`
-    : `<span class="badge-sm na" title="${title}">${f.kind === "no-route" ? "no route" : "n/a"}</span>`;
+    ? `<span class="badge-sm er" title="${title}" data-tip="${title}">${esc(f.kind)}</span>`
+    : `<span class="badge-sm na" title="${title}" data-tip="${title}">${f.kind === "no-route" ? "no route" : "n/a"}</span>`;
   return `
     <tr class="out">
       <td><div class="src">
@@ -1593,7 +1662,7 @@ function cmpRowFailure(f) {
         <span><span class="nm">${esc(f.label)}</span>${badge}
         <div class="bl why">${esc(f.message)}</div></span>
       </div></td>
-      <td class="amt">—</td><td class="dlt"></td>
+      <td class="amt">—</td><td class="dlt"></td><td class="dlt"></td>
       <td class="ms">${f.ms ? f.ms + "ms" : ""}</td>
     </tr>`;
 }
@@ -1638,12 +1707,13 @@ async function compareAll() {
             <th>Source</th>
             <th style="text-align:right">Out (${esc(SEL.out.symbol)})</th>
             <th style="text-align:right">vs best</th>
+            <th style="text-align:right" title="Difference in basis points — 1 bp = 0.01%" data-tip="Difference in basis points. 1 bp = 0.01%, so 25 bps = 0.25%">bps</th>
             <th style="text-align:right">Latency</th>
           </tr></thead>
           <tbody>
             ${ranked.map((r, i) => cmpRowSuccess(r, i === 0)).join("")}
             ${failed.map(cmpRowFailure).join("")}
-            ${!done ? `<tr><td colspan="4"><span class="pending"><span class="spin"></span>waiting for ${total - settled.length} more…</span></td></tr>` : ""}
+            ${!done ? `<tr><td colspan="5"><span class="pending"><span class="spin"></span>waiting for ${total - settled.length} more…</span></td></tr>` : ""}
           </tbody>
         </table>
         ${done ? cmpCaveats(ranked) : ""}

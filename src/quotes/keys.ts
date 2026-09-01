@@ -124,3 +124,13 @@ export const ONECLICK_API_KEY: string = envOr("ONECLICK_API_KEY", "");
  * No literal — a dedicated key is a real secret.
  */
 export const SOCKET_API_KEY: string = envOr("SOCKET_API_KEY", "");
+
+/**
+ * Socket's affiliate id — issued alongside the API key, not derivable.
+ *
+ * `dedicated-backend` rejects a request without it ("Affiliate header is
+ * required"), and rejects a guessed one ("Unrecognized affiliate"), so BOTH
+ * values are needed to leave the free tier. Without it the adapter stays on
+ * `public-backend`, which still quotes, just rate-limited.
+ */
+export const SOCKET_AFFILIATE: string = envOr("SOCKET_AFFILIATE", "");
