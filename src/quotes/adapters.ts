@@ -2414,7 +2414,7 @@ const debridge: QuoteAdapter = {
   crossChain: true,
 
   supports(req) {
-    if (!isCrossChain(req)) return "Bridge only — same-chain not quoted";
+    if (!isCrossChain(req)) return "Bridges only — pick a different To chain";
     for (const c of [req.fromChain, req.toChain]) {
       if (!DLN_CHAINS[c.code]) return `${c.name} not covered`;
     }
@@ -2493,7 +2493,7 @@ const across: QuoteAdapter = {
   crossChain: true,
 
   supports(req) {
-    if (!isCrossChain(req)) return "Bridge only — same-chain not quoted";
+    if (!isCrossChain(req)) return "Bridges only — pick a different To chain";
     for (const c of [req.fromChain, req.toChain]) {
       if (!ACROSS_CHAINS[c.code]) return `${c.name} not covered`;
     }
@@ -2571,7 +2571,7 @@ const symbiosis: QuoteAdapter = {
   crossChain: true,
 
   supports(req) {
-    if (!isCrossChain(req)) return "Bridge only — same-chain not quoted";
+    if (!isCrossChain(req)) return "Bridges only — pick a different To chain";
     for (const c of [req.fromChain, req.toChain]) {
       if (!SYMBIOSIS_CHAINS[c.code]) return `${c.name} not covered`;
     }
@@ -3169,7 +3169,7 @@ const chainflip: QuoteAdapter = {
   crossChain: true,
 
   supports(req) {
-    if (!isCrossChain(req)) return "Bridge only — same-chain not quoted";
+    if (!isCrossChain(req)) return "Bridges only — pick a different To chain";
     for (const [chain, token] of [
       [req.fromChain, req.inToken],
       [req.toChain, req.outToken],
