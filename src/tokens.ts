@@ -218,6 +218,9 @@ const SEED_TOKENS: Record<string, UiToken[]> = {
   cardano: [
     { address: "ADA", symbol: "ADA", name: "Cardano", decimals: 6, isNative: true, isHot: true },
   ],
+  xrp: [
+    { address: "XRP", symbol: "XRP", name: "XRP", decimals: 6, isNative: true, isHot: true },
+  ],
   tron: [
     { address: "TRX", symbol: "TRX", name: "Tron", decimals: 6, isNative: true, isHot: true },
     { address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", symbol: "USDT", name: "Tether USD", decimals: 6, isNative: false, isHot: true },

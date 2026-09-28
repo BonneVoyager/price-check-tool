@@ -134,3 +134,23 @@ export const SOCKET_API_KEY: string = envOr("SOCKET_API_KEY", "");
  * `public-backend`, which still quotes, just rate-limited.
  */
 export const SOCKET_AFFILIATE: string = envOr("SOCKET_AFFILIATE", "");
+
+/**
+ * Pegaroute — a cross-chain routing engine (pegaroute.com).
+ *
+ * No literal: the key is private, and it is scoped to ONE environment. The
+ * stagenet key is rejected by `api.pegaroute.com` with "Invalid API key", so
+ * whichever key is configured must match PEGAROUTE_BASE below.
+ */
+export const PEGAROUTE_API_KEY: string = envOr("PEGAROUTE_API_KEY", "");
+
+/**
+ * Which Pegaroute deployment to call. Stagenet is the default because that is
+ * what the current key is scoped to — it serves real mainnet prices, it is just
+ * their pre-production host. Point this at the production base once a
+ * production key exists.
+ */
+export const PEGAROUTE_BASE: string = envOr(
+  "PEGAROUTE_BASE",
+  "https://stagenet-app.pegaroute.com/api",
+);

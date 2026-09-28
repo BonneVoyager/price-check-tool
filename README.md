@@ -1,6 +1,6 @@
 # Price Check Tool
 
-Compare swap quotes across **37 sources** — aggregators, DEX routers, RFQ market
+Compare swap quotes across **39 sources** — aggregators, DEX routers, RFQ market
 makers, solver networks and a direct on-chain pool read — on one pair, side by
 side, across **44 chains** (EVM, Solana, Sui, Aptos, NEAR, Starknet, Stellar).
 
@@ -373,7 +373,7 @@ prompt calls `syncUrl()` itself.
 Pick a different **To chain** and the same Compare button prices a bridge.
 `ETH` on Ethereum → `USDC` on Solana is one comparison, not a different mode.
 
-**Fifteen** of the 37 sources bridge. The rest report `Same-chain only — cannot
+**Seventeen** of the 39 sources bridge. The rest report `Same-chain only — cannot
 bridge` as a neutral support gap, the same treatment a chain they don't cover
 gets. Verified live in both directions across VMs (EVM→SVM, SVM→EVM,
 EVM→Stellar).
@@ -724,6 +724,82 @@ Two implementation notes:
   directly — Across, NEAR Intents, Relay, Squid, Symbiosis, Mayan, 0x, Bebop,
   KyberSwap, OpenOcean. A Socket win is often the same underlying route another
   row already found, so it is not independent evidence.
+
+### Pegaroute — and the InstaSwap back door
+
+A cross-chain routing engine over 78 chains. `GET /quote` with an `X-API-Key`
+header; the key is private, so it has no literal and goes through the proxy.
+
+**It is a meta-aggregator, and it mostly re-quotes sources we already have.**
+Observed underneath: `openocean`, `thorchain` and `instaswap` — two of which are
+already separate rows here. So a Pegaroute win is frequently the same route
+another row already found, and the venue column names the winning provider so
+that is visible. On BTC→USDC it landed at 8,294 via `thorchain`, directly below
+our own THORChain row at 8,302 — the same route, slightly worse after its fee.
+
+**Its real contribution is InstaSwap**, which has no reachable public API of its
+own (see below), so this is the only way the tool sees those prices. On
+BTC→USDC(eth) that route won Pegaroute's internal ranking at 8,280.
+
+Wire-format notes:
+
+- Chains are **names** (`ETH`, `BASE`, `BTC`), not ids; tokens are
+  `SYMBOL-0xaddress`, or a bare `SYMBOL` for a native coin.
+- `amount` and `expectedOutput` are both **human-readable decimals**.
+- Sender and destination are validated against **their own chain's** address
+  format — a BTC origin rejects an EVM sender outright — so each side gets its
+  own placeholder.
+- **The key is environment-scoped.** The stagenet key is rejected by
+  `api.pegaroute.com` with "Invalid API key", so `PEGAROUTE_BASE` and
+  `PEGAROUTE_API_KEY` must travel together. Stagenet is the default because that
+  is what the current key matches; it serves real mainnet prices.
+
+One bug worth recording: `supports()` originally returned "Set
+PEGAROUTE_API_KEY" when the key was missing, which excluded the source from
+**every browser run** — the key is empty client-side *by design*, because it
+lives on the proxy. The CLI worked throughout, which is what made it look like a
+browser problem rather than a logic error. The check now lives in `quote()`,
+where the server-vs-browser path is actually known.
+
+### THORChain — and why Maya and InstaSwap are not here
+
+**THORChain** settles natively on 13 chains (BTC, DOGE, LTC, BCH, XRP, SOL,
+TRON, Cosmos, ETH, BSC, AVAX, BASE) with no wrapped assets and no bridge in the
+path, which makes it genuinely independent evidence rather than another
+aggregator re-quoting the same routes. Keyless and CORS-open.
+
+Three things it does differently:
+
+- Assets are `CHAIN.TICKER` or `CHAIN.TICKER-0xCONTRACT`, upper case.
+- **Every amount is 1e8**, whatever the token's real decimals — a USDC quote
+  comes back in 1e8, not 1e6. Converting in *and* out is essential; skipping the
+  outbound conversion would overstate a 6-decimal token by 100x.
+- **Individual chains can be halted by governance** while others keep trading.
+  Measured live: BTC, SOL and TRON were halted while ETH, DOGE, LTC, BCH and
+  Cosmos quoted fine. That is a temporary chain state, so it reports "Trading
+  halted on this chain" rather than implying the pair does not exist.
+
+Note `thornode.ninerealms.com` has no DNS any more; the gateway host above is
+the one that works.
+
+**XRP is back.** It was dropped earlier because 1Click lists it but its route
+returns `Internal server error` in both directions. THORChain quotes it
+natively, so the chain now has a working source.
+
+**Maya is fully halted.** `HALTCHAINGLOBAL = 1` in its mimir, and every pair
+tried — BTC→ETH, ETH→CACAO, RUNE→CACAO, ETH→DASH — returns "trading is halted".
+The API is healthy and the adapter would be a near-copy of THORChain's, so this
+is worth revisiting if the halt lifts; adding it now would only ever produce an
+error row.
+
+**InstaSwap has no public quote endpoint** of its own. `instaswap.io` redirects
+to `instaswap.com`, the marketing site advertises an API, but every documented
+path 404s (`api.instaswap.com/swap-lite`, `/api/v2/getPrice`,
+`instaswap.io/apiDocs`) and their own landing page issues no rate requests to
+instrument. Their docs describe an `affiliateId`, so it is partner-gated.
+
+It is reachable **indirectly through Pegaroute**, which quotes it as one of its
+providers — see above.
 
 ### New same-chain routers
 

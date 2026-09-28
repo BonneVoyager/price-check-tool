@@ -108,6 +108,12 @@ export const CHAINS: ChainInfo[] = [
   { code: "zcash", name: "Zcash", id: null, nativeSymbol: "ZEC", evm: false },
   { code: "dash", name: "Dash", id: null, nativeSymbol: "DASH", evm: false },
   { code: "cardano", name: "Cardano", id: null, nativeSymbol: "ADA", evm: false },
+  /**
+   * XRP Ledger. Dropped once because 1Click lists it but its route returns
+   * "Internal server error" in both directions — restored because THORChain
+   * quotes it natively, so the chain now has a working source.
+   */
+  { code: "xrp", name: "XRP Ledger", id: null, nativeSymbol: "XRP", evm: false },
   { code: "tron", name: "Tron", id: null, nativeSymbol: "TRX", evm: false },
   /**
    * Osmosis (Cosmos/IBC). Assets are denoms (`uosmo`, `ibc/<hash>`) rather than
@@ -182,6 +188,7 @@ export function nativeAddressFor(chain: ChainInfo): string {
     case "zcash":
     case "dash":
     case "cardano":
+    case "xrp":
     case "tron":
       return chain.nativeSymbol;
     default:

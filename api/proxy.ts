@@ -234,6 +234,43 @@ const TARGETS = {
       };
     },
   },
+  /**
+   * Pegaroute — GET, proxied purely to keep the API key server-side.
+   *
+   * The key is environment-scoped (a stagenet key is rejected by the production
+   * host), so PEGAROUTE_BASE travels with it and both are read from env here.
+   */
+  pegaroute: {
+    build(p: URLSearchParams) {
+      const key = process.env.PEGAROUTE_API_KEY ?? "";
+      if (!key) throw new Error("PEGAROUTE_API_KEY is not set on the proxy");
+      const base =
+        process.env.PEGAROUTE_BASE ?? "https://stagenet-app.pegaroute.com/api";
+      const need = (n: string) => {
+        const v = p.get(n);
+        if (!v) throw new Error(`missing ${n}`);
+        return v;
+      };
+      const qs = new URLSearchParams({
+        fromChain: need("fromChain"),
+        fromToken: need("fromToken"),
+        toChain: need("toChain"),
+        toToken: need("toToken"),
+        amount: need("amount"),
+      });
+      for (const opt of ["senderAddress", "destinationAddress"]) {
+        const v = p.get(opt);
+        if (v) qs.set(opt, v);
+      }
+      return {
+        url: `${base}/quote?${qs}`,
+        headers: {
+          accept: "application/json",
+          "X-API-Key": key,
+        } as Record<string, string>,
+      };
+    },
+  },
 } satisfies Record<
   string,
   {

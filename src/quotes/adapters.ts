@@ -14,6 +14,8 @@ import { CHAINS, NATIVE, TON_NATIVE, type ChainInfo } from "../chains.ts";
 import {
   ENSO_API_KEY,
   ONECLICK_API_KEY,
+  PEGAROUTE_API_KEY,
+  PEGAROUTE_BASE,
   SOCKET_AFFILIATE,
   SOCKET_API_KEY,
   SQUID_INTEGRATOR_ID,
@@ -24,7 +26,7 @@ import {
 } from "./keys.ts";
 import { contractIdForAsset, isStellarAsset } from "./soroban.ts";
 import { proxyAvailable, proxyUrl } from "./proxy.ts";
-import { getQuote, toBaseUnits } from "../openocean.ts";
+import { fromBaseUnits, getQuote, toBaseUnits } from "../openocean.ts";
 import {
   NoRouteError,
   isCrossChain,
@@ -3732,6 +3734,322 @@ const socket: QuoteAdapter = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// THORChain — native cross-chain liquidity (no wrapped assets, no bridges).
+//
+// Reaches 13 chains including BTC, DOGE, LTC, BCH, XRP, SOL, TRON and Cosmos,
+// which is genuinely different coverage: it settles natively on each chain
+// rather than routing over a bridge, so it is independent evidence rather than
+// another aggregator re-quoting the same routes.
+//
+// It is also the only source here that quotes XRP — 1Click lists XRP but its
+// route 500s in both directions, which is why that chain was dropped earlier.
+//
+// Three things it does differently:
+//  - Assets are `CHAIN.TICKER` or `CHAIN.TICKER-0xCONTRACT` (upper case).
+//  - EVERY amount is 1e8, regardless of the token's real decimals. A USDC quote
+//    comes back in 1e8, not 1e6. Converting on the way in AND out is essential.
+//  - Individual chains can be HALTED by governance while others keep trading
+//    (checked live: BTC, SOL and TRON were halted while ETH, DOGE, LTC, BCH and
+//    Cosmos quoted fine). A halt is a temporary chain state, not a missing
+//    pair, so it is reported as such.
+//
+// The public `thornode.ninerealms.com` has no DNS; this gateway is the host
+// their own docs point at.
+// ---------------------------------------------------------------------------
+
+const THOR_BASE = "https://gateway.liquify.com/chain/thorchain_api";
+
+/** THORChain's chain prefixes, keyed by our chain codes. */
+const THOR_CHAINS: Record<string, string> = {
+  eth: "ETH",
+  bsc: "BSC",
+  avax: "AVAX",
+  base: "BASE",
+  bitcoin: "BTC",
+  bitcoincash: "BCH",
+  litecoin: "LTC",
+  doge: "DOGE",
+  solana: "SOL",
+  tron: "TRON",
+  xrp: "XRP",
+  osmosis: "GAIA",
+};
+
+/** THORChain denominates every quote in 1e8, whatever the token's own decimals. */
+const THOR_DECIMALS = 8;
+
+/** `CHAIN.TICKER` for a native coin, `CHAIN.TICKER-0xCONTRACT` for a token. */
+function thorAsset(chain: ChainInfo, token: { address: string; symbol: string }): string {
+  const prefix = THOR_CHAINS[chain.code];
+  const ticker = token.symbol.toUpperCase();
+  // Native coins carry no contract suffix.
+  const isNative =
+    isNativeSentinel(token.address) ||
+    token.address.toLowerCase() === "native" ||
+    token.address === token.symbol ||
+    ticker === chain.nativeSymbol.toUpperCase();
+  if (isNative) return `${prefix}.${ticker}`;
+  return `${prefix}.${ticker}-${token.address.toUpperCase()}`;
+}
+
+const thorchain: QuoteAdapter = {
+  id: "thorchain",
+  label: "THORChain",
+  blurb: "Native cross-chain liquidity",
+  crossChain: true,
+
+  supports(req) {
+    for (const c of isCrossChain(req) ? [req.fromChain, req.toChain] : [req.chain]) {
+      if (!THOR_CHAINS[c.code]) return `${c.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const url =
+      `${THOR_BASE}/thorchain/quote/swap?` +
+      qs({
+        from_asset: thorAsset(req.fromChain, req.inToken),
+        to_asset: thorAsset(req.toChain, req.outToken),
+        // 1e8 on the way in, whatever the token's real decimals are.
+        amount: toBaseUnits(req.amount, THOR_DECIMALS),
+      });
+
+    const { json } = await getJson(url, signal);
+    const out = json.expected_amount_out;
+    if (!out) {
+      const msg = String(json.message ?? json.error ?? "no route");
+      // Governance can halt one chain while the rest keep trading, so this is a
+      // temporary state rather than "this pair does not exist".
+      if (/halted/i.test(msg)) {
+        throw new NoRouteError("Trading halted on this chain by THORChain governance");
+      }
+      throw new NoRouteError(msg.slice(0, 90));
+    }
+
+    return {
+      source: "thorchain",
+      label: "THORChain",
+      // 1e8 back out — re-scale to the token's own decimals so the ranking
+      // compares like with like. Skipping this would overstate a 6-decimal
+      // token by 100x.
+      outAmount: toBaseUnits(
+        fromBaseUnits(String(out), THOR_DECIMALS),
+        req.outToken.decimals,
+      ),
+      outDecimals: req.outToken.decimals,
+      venues: dedupeVenues(["THORChain"]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Pegaroute — cross-chain routing engine. Same-chain AND cross-chain.
+//
+// A META-AGGREGATOR: it quotes several providers in parallel and ranks them by
+// net output. Observed underneath: openocean, thorchain and instaswap. Two of
+// those we already query DIRECTLY, so a Pegaroute win is frequently the same
+// route another row already found — the venue tag names the winning provider so
+// that is visible rather than hidden.
+//
+// Its one genuinely new contribution is INSTASWAP, which has no reachable
+// public API of its own (every documented path 404s and it appears to be
+// partner-gated), so Pegaroute is the only way this tool sees those prices.
+//
+// Wire-format notes:
+//  - Chains are NAMES ("ETH", "BASE", "BTC"), not ids.
+//  - Tokens are `SYMBOL-0xaddress` for contracts, bare `SYMBOL` for natives.
+//  - `amount` is HUMAN-READABLE, and `expectedOutput` comes back the same way.
+//  - The key is environment-scoped: a stagenet key is rejected by the
+//    production host, so PEGAROUTE_BASE and PEGAROUTE_API_KEY travel together.
+// ---------------------------------------------------------------------------
+
+/** Our chain codes -> Pegaroute chain names, from GET /chains. */
+const PEGA_CHAINS: Record<string, string> = {
+  eth: "ETH",
+  arbitrum: "ARBITRUM",
+  base: "BASE",
+  optimism: "OPTIMISM",
+  polygon: "POLYGON",
+  bsc: "BSC",
+  avax: "AVAX",
+  xdai: "GNOSIS",
+  scroll: "SCROLL",
+  linea: "LINEA",
+  zksync: "ZKSYNC",
+  mantle: "MANTLE",
+  blast: "BLAST",
+  mode: "MODE",
+  manta: "MANTA",
+  metis: "METIS",
+  celo: "CELO",
+  cronos: "CRONOS",
+  kava: "KAVA",
+  moonriver: "MOONRIVER",
+  aurora: "AURORA",
+  harmony: "HARMONY",
+  telos: "TELOS",
+  flare: "FLARE",
+  rootstock: "ROOTSTOCK",
+  polygon_zkevm: "POLYGON_ZKEVM",
+  opbnb: "OPBNB",
+  ape: "APECHAIN",
+  gravity: "GRAVITY",
+  plume: "PLUME",
+  tac: "TAC",
+  sei: "SEI",
+  sonic: "SONIC",
+  bera: "BERACHAIN",
+  monad: "MONAD",
+  hyperevm: "HYPEREVM",
+  // Non-EVM.
+  solana: "SOL",
+  near: "NEAR",
+  aptos: "APTOS",
+  sui: "SUI",
+  starknet: "STARKNET",
+  stellar: "STELLAR",
+  ton: "TON",
+  tron: "TRON",
+  bitcoin: "BTC",
+  bitcoincash: "BCH",
+  litecoin: "LTC",
+  doge: "DOGE",
+  dash: "DASH",
+  zcash: "ZEC",
+  cardano: "CARDANO",
+  xrp: "XRP",
+  osmosis: "GAIA",
+};
+
+/** `SYMBOL-0xaddress` for a contract token, bare `SYMBOL` for a native coin. */
+function pegaToken(chain: ChainInfo, token: { address: string; symbol: string }): string {
+  const sym = token.symbol.toUpperCase();
+  const isNative =
+    isNativeSentinel(token.address) ||
+    token.address.toLowerCase() === "native" ||
+    token.address === token.symbol ||
+    sym === chain.nativeSymbol.toUpperCase();
+  if (isNative) return sym;
+  // EVM contracts are lower-cased in their ids; other ecosystems keep their own
+  // address form.
+  const addr = chain.evm ? token.address.toLowerCase() : token.address;
+  return `${sym}-${addr}`;
+}
+
+const pegaroute: QuoteAdapter = {
+  id: "pegaroute",
+  label: "Pegaroute",
+  blurb: "Routing engine (API key)",
+  crossChain: true,
+
+  supports(req) {
+    // Deliberately NOT gated on PEGAROUTE_API_KEY: the key is empty in the
+    // browser BY DESIGN, because it lives on the proxy. Checking it here made
+    // the adapter exclude itself from every browser run with "Set
+    // PEGAROUTE_API_KEY" while the CLI worked fine — the key is checked in
+    // quote(), where the server-vs-browser path is actually known.
+    for (const c of isCrossChain(req) ? [req.fromChain, req.toChain] : [req.chain]) {
+      if (!PEGA_CHAINS[c.code]) return `${c.name} not covered`;
+    }
+    return true;
+  },
+
+  async quote(req, signal) {
+    const inBrowser = typeof window !== "undefined";
+    // Sender and destination are validated against THEIR OWN chain's address
+    // format — a BTC origin rejects an EVM sender outright ("Invalid BTC
+    // address. Expected bech32..."), so each side needs its own placeholder.
+    const addrFor = (chain: ChainInfo) => {
+      if (req.account && chain.evm) return req.account;
+      switch (chain.code) {
+        case "bitcoin": return "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        case "doge": return "DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L";
+        case "litecoin": return "LhyLNfBkoKshT7R8Pce6vkB9T2cP2o84hx";
+        case "bitcoincash": return "qr95sy3j9xwd2ap32xkykttr4cvcu7as4y0qverfuy";
+        case "dash": return "Xx4dYKgz3Zcv6kheaqog3fynaKWjbahb6b";
+        case "zcash": return "t1KDGuBpNTgqcnJhVvLGoKPjKrnCFxfCwvL";
+        case "solana": return SOL_PLACEHOLDER;
+        case "stellar": return STELLAR_PLACEHOLDER;
+        case "xrp": return "rEb8TK3gBgk5auZkwc6sHnwrGVJH8DuaLh";
+        case "cardano": return "addr1qy2jt0qpqz2z2z9zx5w4xemekkce7yderz53kjue53lpqv90lkfa9sgrfjuz6uvt4uqtrqhl2kj0a9lnr9ndzutx32gqleeckv";
+        case "tron": return "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC";
+        case "ton": return "EQD2NmD_lH5f5u1Kj3KfGyTvhZSX0Eg6qp2a5IQUKXxOG21n";
+        case "near": return "relay.tg";
+        default: return req.account || PLACEHOLDER_TAKER;
+      }
+    };
+    const params = {
+      fromChain: PEGA_CHAINS[req.fromChain.code],
+      fromToken: pegaToken(req.fromChain, req.inToken),
+      toChain: PEGA_CHAINS[req.toChain.code],
+      toToken: pegaToken(req.toChain, req.outToken),
+      // Human-readable, not base units.
+      amount: req.amount,
+      senderAddress: addrFor(req.fromChain),
+      destinationAddress: addrFor(req.toChain),
+    };
+
+    let json: Record<string, any>;
+    let url: string;
+
+    if (inBrowser) {
+      // The key is private, so it must not ship in the bundle.
+      if (!(await proxyAvailable())) {
+        throw new NoRouteError("Pegaroute needs the proxy (API key) — proxy unreachable");
+      }
+      url = proxyUrl("pegaroute", params);
+      const res = await fetch(url, { signal });
+      const text = await res.text();
+      try {
+        json = JSON.parse(text) as Record<string, any>;
+      } catch {
+        throw new NoRouteError(`Non-JSON response (HTTP ${res.status})`);
+      }
+      if (!res.ok && json.error && !json.routes) {
+        throw new NoRouteError(
+          String(json.error?.userMessage ?? json.error?.message ?? json.error).slice(0, 90),
+        );
+      }
+    } else {
+      if (!PEGAROUTE_API_KEY) {
+        throw new NoRouteError("Set PEGAROUTE_API_KEY in .env to use Pegaroute");
+      }
+      url = `${PEGAROUTE_BASE}/quote?` + qs(params);
+      json = (await getJson(url, signal, { "X-API-Key": PEGAROUTE_API_KEY })).json;
+    }
+
+    // routes[] is provider-ranked but not guaranteed sorted, so pick explicitly.
+    const routes: any[] = Array.isArray(json.routes) ? json.routes : [];
+    const best = routes
+      .filter((r) => Number(r?.expectedOutput) > 0)
+      .sort((a, b) => Number(b.expectedOutput) - Number(a.expectedOutput))[0];
+
+    if (!best) {
+      const err = json.error?.userMessage ?? json.error?.message;
+      throw new NoRouteError(String(err ?? "no route").slice(0, 90));
+    }
+
+    return {
+      source: "pegaroute",
+      label: "Pegaroute",
+      // Decimal string out -> base units, so ranking compares like with like.
+      outAmount: toBaseUnits(String(best.expectedOutput), req.outToken.decimals),
+      outDecimals: req.outToken.decimals,
+      // Name the winning provider: it is often a source we already query, and
+      // hiding that would make Pegaroute look like independent confirmation.
+      venues: dedupeVenues([best.provider]),
+      url,
+      ms: 0,
+      canExecute: false,
+    };
+  },
+};
+
 /** Registry order = display order before ranking. */
 export const ADAPTERS: QuoteAdapter[] = [
   openocean,
@@ -3772,6 +4090,8 @@ export const ADAPTERS: QuoteAdapter[] = [
   squid,
   haiku,
   socket,
+  thorchain,
+  pegaroute,
 ];
 
 export function adapterById(id: string) {
